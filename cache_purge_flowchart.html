@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Cache Purge Path Generator — Flowchart</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 24px 80px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+    }
+    header h1 {
+      font-size: 1.7rem;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: -0.02em;
+    }
+    header p {
+      margin-top: 8px;
+      font-size: 0.9rem;
+      color: #94a3b8;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .badge-blue  { background: #1e40af33; color: #60a5fa; border: 1px solid #1e40af88; }
+    .badge-green { background: #16653233; color: #4ade80; border: 1px solid #16653288; }
+    .badge-red   { background: #7f1d1d33; color: #f87171; border: 1px solid #7f1d1d88; }
+
+    .chart-wrap {
+      width: 100%;
+      max-width: 1100px;
+      background: #1e2130;
+      border: 1px solid #2d3452;
+      border-radius: 16px;
+      padding: 40px 32px;
+      box-shadow: 0 8px 40px #00000066;
+    }
+
+    .mermaid {
+      width: 100%;
+    }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 36px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: #94a3b8;
+    }
+    .legend-dot {
+      width: 14px; height: 14px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Cache Purge Path Generator
+    <span class="badge badge-blue">Planned</span>
+  </h1>
+  <p>How changed git files become precise dispatcher &amp; CDN flush paths</p>
+</header>
+
+<div class="chart-wrap">
+  <div class="mermaid">
+flowchart TD
+    A(["🚀  Deploy Triggered\n(Cloud Manager Pipeline)"]):::start
+
+    A --> B["📂  Collect Changed Files\nfrom git diff / PR"]:::input
+
+    B --> C{"🔍  Categorise\neach file path"}:::decision
+
+    %% Three branches
+    C -->|"path contains\n/clientlibs/"| D["📦  Clientlib Bucket"]:::clientlib
+    C -->|"path contains\n/components/"| E["🧩  Component Bucket"]:::component
+    C -->|"image / font / DAM\nextension or /dam/"| F["🖼  Asset Bucket"]:::asset
+    C -->|"Java / pom / config\nno cache impact"| Z(["⏭  Skip — no\ncache action needed"]):::skip
+
+    %% Clientlib resolution
+    D --> D1["Extract appName + libName\nfrom jcr_root path"]:::step
+    D1 --> D2["Read .content.xml\n→ get categories=\[...\]"]:::step
+    D2 --> D3{"allowProxy\n= true?"}:::decision
+    D3 -->|Yes| D4["Build proxy paths:\n/etc.clientlibs/{appName}/\nclientlibs/{libName}.min.css\n{libName}.min.js"]:::output
+    D3 -->|No| D5(["⚠️  Not publicly\nserved — skip"]):::warn
+    D4 --> DEDUP["🗑  Deduplicate\n(5 files in same lib → 2 paths)"]:::step
+
+    %% Component resolution
+    E --> E1["Extract componentGroup\nfrom .content.xml"]:::step
+    E1 --> E2["Determine stat-file level\n(statfileslevel = 2)"]:::step
+    E2 --> E3["Page-level invalidation:\n/content/idfcfirstbank/*\nor /content/idfcin/*"]:::output
+    E3 --> DANGER
+
+    %% Asset resolution
+    F --> F1{"DAM path\n(/dam/)?"}:::decision
+    F1 -->|Yes| F2["/content/dam/{path}"]:::output
+    F1 -->|No| F3["Map webpack output:\n/etc.clientlibs/.../\nresources/{file}"]:::output
+    F2 --> DEDUP
+    F3 --> DEDUP
+
+    DEDUP --> DANGER
+
+    %% Danger detection
+    DANGER["🛡  Danger Signal Check"]:::danger
+    DANGER --> DA{"&gt; 10 clientlibs\nchanged?"}:::decision
+    DA -->|Yes| DA1(["🔴  Mass clientlib change\n— consider rolling deploy"]):::alert
+    DA -->|No| DB
+
+    DA1 --> DB{"Core page\ncomponent changed?"}:::decision
+    DB -->|Yes| DB1(["🔴  Every page affected\n— rate-limit your flush"]):::alert
+    DB -->|No| DC
+
+    DB1 --> DC{"Deleted clientlib\nstill referenced?"}:::decision
+    DC -->|Yes| DC1(["🔴  Broken ref detected\nN pages will be unstyled"]):::alert
+    DC -->|No| OUT
+
+    DC1 --> OUT
+
+    %% Farm routing
+    OUT["🗺  Route by Module → Farm"]:::step
+    OUT --> FA["Farm 998\nidfcfirstbank.com\n(idfc-ams, idfc-react-webform,\nidfc-first-assets)"]:::farm
+    OUT --> FB["Farm 997\nidfc.in\n(idfc-first-others)"]:::farm
+
+    FA --> MANIFEST
+    FB --> MANIFEST
+
+    MANIFEST(["📋  PurgeManifest\nClientlibs · Components · Assets\nDanger signals · curl commands"]):::result
+
+    MANIFEST --> COPY["📋  Copy paths  /  Copy curl commands\n— paste into deployment runbook"]:::action
+
+
+    %% Styles
+    classDef start     fill:#312e81,stroke:#6366f1,color:#e0e7ff,rx:24
+    classDef input     fill:#1e3a5f,stroke:#3b82f6,color:#bfdbfe
+    classDef decision  fill:#1f2937,stroke:#6b7280,color:#f9fafb
+    classDef clientlib fill:#164e63,stroke:#22d3ee,color:#cffafe
+    classDef component fill:#1c3d2e,stroke:#4ade80,color:#bbf7d0
+    classDef asset     fill:#3b2a0e,stroke:#fbbf24,color:#fef3c7
+    classDef skip      fill:#1f2937,stroke:#4b5563,color:#9ca3af
+    classDef step      fill:#1e2130,stroke:#475569,color:#cbd5e1
+    classDef output    fill:#0f3460,stroke:#60a5fa,color:#bfdbfe
+    classDef warn      fill:#3b2f0e,stroke:#f59e0b,color:#fef3c7
+    classDef danger    fill:#2d1b1b,stroke:#ef4444,color:#fecaca
+    classDef alert     fill:#450a0a,stroke:#f87171,color:#fca5a5
+    classDef farm      fill:#1a2e1a,stroke:#22c55e,color:#bbf7d0
+    classDef result    fill:#1e1b4b,stroke:#a78bfa,color:#ddd6fe,rx:24
+    classDef action    fill:#1c1917,stroke:#78716c,color:#d6d3d1
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#22d3ee;"></div>Clientlib path</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4ade80;"></div>Component path</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#fbbf24;"></div>Asset path</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ef4444;"></div>Danger signal</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#a78bfa;"></div>Final output</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#22c55e;"></div>Farm routing</div>
+  </div>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background:       '#1e2130',
+      primaryColor:     '#1e3a5f',
+      primaryTextColor: '#e2e8f0',
+      primaryBorderColor: '#3b82f6',
+      lineColor:        '#64748b',
+      secondaryColor:   '#1c3d2e',
+      tertiaryColor:    '#312e81',
+      edgeLabelBackground: '#1e2130',
+      fontSize:         '14px',
+    },
+    flowchart: {
+      curve: 'basis',
+      padding: 20,
+      nodeSpacing: 50,
+      rankSpacing: 60,
+      htmlLabels: true,
+    }
+  });
+</script>
+</body>
+</html>

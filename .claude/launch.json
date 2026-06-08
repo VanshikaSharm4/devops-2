@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "flowchart",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "7821"],
+      "port": 7821
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "/Users/vanshika/Library/Python/3.9/bin/streamlit",
+      "runtimeArgs": ["run", "dashboard/app.py", "--server.port=8502", "--server.headless=true"],
+      "port": 8502
+    }
+  ]
+}

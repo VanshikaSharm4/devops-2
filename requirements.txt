@@ -1,0 +1,13 @@
+anthropic
+azure-storage-file-share
+chromadb
+google-generativeai
+openai
+pandas
+plotly
+pytest
+python-dotenv
+pydantic>=2.0
+requests
+scikit-learn
+streamlit

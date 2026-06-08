@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture Layers</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #ffffff;
+      color: #111111;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 60px 40px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 48px;
+    }
+
+    .sources {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+
+    .source {
+      border: 1px solid #111;
+      padding: 8px 18px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .arrow {
+      text-align: center;
+      font-size: 1rem;
+      color: #aaa;
+      margin: 8px 0;
+    }
+
+    .layer {
+      border: 1px solid #111;
+      padding: 20px 24px;
+      margin-bottom: 0;
+    }
+
+    .layer + .layer {
+      border-top: none;
+    }
+
+    .layer-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .layer-num {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #888;
+      white-space: nowrap;
+    }
+
+    .layer-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+    }
+
+    .layer-sub {
+      font-size: 0.75rem;
+      color: #888;
+      font-style: italic;
+      margin-bottom: 10px;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      font-size: 0.8rem;
+      margin-bottom: 5px;
+      line-height: 1.5;
+    }
+
+    .lbl {
+      color: #888;
+      min-width: 140px;
+      flex-shrink: 0;
+    }
+
+    .val {
+      color: #111;
+    }
+
+    .highlight {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid #111;
+      padding: 2px 8px;
+    }
+
+    .rag {
+      border: 1px solid #111;
+      border-left: 3px solid #111;
+      padding: 20px 24px;
+      margin: 0;
+    }
+
+    .rag + .layer {
+      border-top: none;
+    }
+
+    .rag-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .rag-sub {
+      font-size: 0.75rem;
+      color: #888;
+      font-style: italic;
+      margin-bottom: 10px;
+    }
+
+    .outputs {
+      border: 1px solid #111;
+      padding: 20px 24px;
+      margin-top: 0;
+      border-top: none;
+    }
+
+    .output-title {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    .output-chips {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .chip {
+      border: 1px solid #111;
+      padding: 6px 14px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .output-note {
+      font-size: 0.74rem;
+      color: #888;
+      font-style: italic;
+    }
+
+    code {
+      font-family: monospace;
+      background: #f4f4f4;
+      padding: 1px 5px;
+      font-size: 0.78rem;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>DevOps Intelligence Platform</h1>
+  <p class="subtitle">Data Processing Architecture — 8 Layers</p>
+
+  <!-- Sources -->
+  <div class="sources">
+    <div class="source">Execution Metadata</div>
+    <div class="source">Raw Logs (Azure)</div>
+    <div class="source">Git Repo</div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- Layer 1 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 1</span>
+      <span class="layer-title">Collection</span>
+    </div>
+    <div class="layer-sub">"Fetch the raw data"</div>
+    <div class="row"><span class="lbl">Execution metadata</span><span class="val">99 executions, statuses, durations, step info</span></div>
+    <div class="row"><span class="lbl">Azure log files</span><span class="val">build.log · securityTests.log · deploy.log</span></div>
+    <div class="row"><span class="lbl">Git</span><span class="val">file contents, commit history, diffs</span></div>
+  </div>
+
+  <!-- Layer 2 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 2</span>
+      <span class="layer-title">Parsing</span>
+    </div>
+    <div class="layer-sub">"Structure the raw data"</div>
+    <div class="row"><span class="lbl">10,000 log lines</span><span class="val">→ <code>error_type</code> missing_npm_module</span></div>
+    <div class="row"><span class="lbl"></span><span class="val">→ <code>error_message</code> Cannot find module 'react-router'</span></div>
+    <div class="row"><span class="lbl"></span><span class="val">→ <code>key_lines</code> [3 most relevant lines]</span></div>
+  </div>
+
+  <!-- Layer 3 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 3</span>
+      <span class="layer-title">Enrichment</span>
+    </div>
+    <div class="layer-sub">"Connect the dots between sources"</div>
+    <div class="row"><span class="lbl">execution 8157337</span><span class="val">failed at build</span></div>
+    <div class="row"><span class="lbl">+ commit abc123</span><span class="val">ran before it</span></div>
+    <div class="row"><span class="lbl">+ commit touched</span><span class="val">ui.frontend/package.json</span></div>
+    <div class="row"><span class="lbl">= result</span><span class="val">probable cause attached to the failure</span></div>
+  </div>
+
+  <!-- Layer 4 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 4</span>
+      <span class="layer-title">Compression</span>
+    </div>
+    <div class="layer-sub">"Remove noise, keep signal"</div>
+    <div class="row"><span class="lbl">99 executions</span><span class="val">→ top 5 failure patterns</span></div>
+    <div class="row"><span class="lbl">10,000 log lines</span><span class="val">→ 5 diagnostic lines</span></div>
+    <div class="row"><span class="lbl">50 scan findings</span><span class="val">→ 10 critical ones</span></div>
+    <div class="highlight">~80% of tokens cut here</div>
+  </div>
+
+  <!-- Layer 5 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 5</span>
+      <span class="layer-title">Context Assembly</span>
+    </div>
+    <div class="layer-sub">"Build one clean package per feature"</div>
+    <div class="row"><span class="lbl">Failure Report</span><span class="val">gets failure patterns + error summaries</span></div>
+    <div class="row"><span class="lbl">Risk Assessment</span><span class="val">gets commit metadata + historical failure rates</span></div>
+    <div class="row"><span class="lbl">Pinpoint</span><span class="val">gets one execution log + relevant code files</span></div>
+    <div class="row"><span class="lbl">Static Scan</span><span class="val">gets codebase files + known CM antipatterns</span></div>
+  </div>
+
+  <!-- RAG -->
+  <div class="rag">
+    <div class="rag-title">Vector DB — RAG (ChromaDB)</div>
+    <div class="rag-sub">"Have we seen something like this before?"</div>
+    <div class="row"><span class="lbl">Query</span><span class="val">current failure pattern + affected modules</span></div>
+    <div class="row"><span class="lbl">Returns</span><span class="val">top matching historical failures with similarity scores</span></div>
+    <div class="row"><span class="lbl">Result</span><span class="val">injected into context before the LLM call</span></div>
+  </div>
+
+  <!-- Layer 6 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 6</span>
+      <span class="layer-title">Prompt Engineering</span>
+    </div>
+    <div class="layer-sub">"Tell the AI what to do and how to answer"</div>
+    <div class="row"><span class="lbl">System prompt</span><span class="val">role + output schema + constraints + example</span></div>
+    <div class="row"><span class="lbl">User prompt</span><span class="val">compressed context + RAG matches</span></div>
+    <div class="row"><span class="lbl">Key constraint</span><span class="val">never invent numbers — all stats come from data</span></div>
+  </div>
+
+  <!-- Layer 7 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 7</span>
+      <span class="layer-title">LLM Call</span>
+    </div>
+    <div class="layer-sub">"Send to AI with the right settings per feature"</div>
+    <div class="row"><span class="lbl">Failure Report</span><span class="val">temp 0.2 · 3000 tokens · pattern synthesis</span></div>
+    <div class="row"><span class="lbl">Pinpoint</span><span class="val">temp 0.0 · 800 tokens · exact precision</span></div>
+    <div class="row"><span class="lbl">Risk Assessment</span><span class="val">temp 0.0 · 1500 tokens · analytical</span></div>
+    <div class="highlight">JSON output</div>
+  </div>
+
+  <!-- Layer 8 -->
+  <div class="layer">
+    <div class="layer-header">
+      <span class="layer-num">Layer 8</span>
+      <span class="layer-title">Output Parsing</span>
+    </div>
+    <div class="layer-sub">"Validate and structure the AI's answer"</div>
+    <div class="row"><span class="lbl">AI response</span><span class="val">→ Pydantic model validation</span></div>
+    <div class="row"><span class="lbl">If fails</span><span class="val">→ auto retry with schema shown again</span></div>
+    <div class="row"><span class="lbl">If passes</span><span class="val">→ clean typed object, no raw strings</span></div>
+  </div>
+
+  <!-- Output -->
+  <div class="outputs">
+    <div class="output-title">Clean Structured Output</div>
+    <div class="output-chips">
+      <div class="chip">FailureReport</div>
+      <div class="chip">RiskReport</div>
+      <div class="chip">PinpointReport</div>
+      <div class="chip">ScanReport</div>
+    </div>
+    <div class="output-note">every output stored back into ChromaDB — becomes RAG memory for future analyses</div>
+  </div>
+
+  <!-- Embeddings visualisation -->
+  <div style="margin-top: 48px;">
+    <div style="font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 8px;">
+      Vector DB — Embeddings Visualisation
+    </div>
+    <div style="font-size: 0.8rem; color: #888; font-style: italic; margin-bottom: 16px;">
+      3D PCA of all stored failure embeddings in ChromaDB — each dot is one indexed failure record, clustered by semantic similarity
+    </div>
+    <img
+      src="embeddings.png"
+      alt="3D PCA of Embeddings"
+      style="width: 100%; border: 1px solid #111; display: block;"
+    />
+  </div>
+
+</body>
+</html>
