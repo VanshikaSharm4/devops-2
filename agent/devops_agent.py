@@ -47,6 +47,8 @@ CONFIGS: dict[str, LLMCallConfig] = {
     "correlate": LLMCallConfig(max_tokens=2048, temperature=0.1, json_mode=True),
     "scan":      LLMCallConfig(max_tokens=3072, temperature=0.1, json_mode=True),
     "pinpoint":  LLMCallConfig(max_tokens=2048, temperature=0.1, json_mode=True),
+    "logsage_rca": LLMCallConfig(max_tokens=2048, temperature=0.1, json_mode=True),
+    "post_failure": LLMCallConfig(max_tokens=4096, temperature=0.1, json_mode=True),
 }
 
 
@@ -311,24 +313,8 @@ def run_analysis(context: dict, pipeline_df=None, failed_df=None) -> "FailureRep
     # Compute wasted hours and per-finding business_impact from Splunk data
     _fill_wasted_hours(report, pipeline_df, failed_df)
 
-    # Auto-store findings in vector memory — tagged with the dominant pipeline name
-    try:
-        from vector_store.store import ingest_failure_report
-        # Extract the most common pipeline name from context so records are
-        # properly scoped and never bleed across pipelines during RAG queries
-        _pipeline_name = ""
-        try:
-            _patterns = context.get("top_failure_patterns", [])
-            if _patterns:
-                from collections import Counter
-                _pipeline_name = Counter(
-                    p.get("pipeline", "") for p in _patterns if p.get("pipeline")
-                ).most_common(1)[0][0]
-        except Exception:
-            pass
-        ingest_failure_report(report, pipeline_name=_pipeline_name)
-    except Exception:
-        pass
+    # Note: AI-generated results are NOT stored back into ChromaDB.
+    # ChromaDB stores only source evidence (real parsed logs, git diffs).
 
     return report
 
@@ -408,99 +394,146 @@ def run_analysis_markdown(context: dict) -> str:
 
 def _enrich_risk_with_memory(user_message: str, context: dict) -> str:
     """
-    Query the vector store for semantically similar past incidents, using commit
-    profile signals (changed files, added dependencies, modules, anti-patterns)
-    as the query — not just step names.
-
-    Results are labelled by similarity score and the signal that drove the match.
-    Deduplicates by execution_id across all module queries.
+    Query ChromaDB for similar past Production failures using real log content
+    and git diff signals. Results are filtered by environment=prod so dev/stage
+    failures never pollute production predictions.
 
     Silently skips if the vector store is unavailable or empty.
     """
     try:
-        from vector_store.store import find_similar_failures
-
         commit_profile: dict = context.get("commit_profile") or {}
-        rule_scores: dict    = context.get("rule_scores") or {}
-
         changed_files: list  = commit_profile.get("changed_files") or []
         modules: list        = commit_profile.get("modules_touched") or []
-        added_deps: list     = commit_profile.get("added_dependencies") or []
-        anti_patterns: list  = commit_profile.get("anti_patterns") or []
-        env_vars: list       = commit_profile.get("env_vars_referenced") or []
 
-        # Build a rich query signal from commit content
-        query_parts: list[str] = []
-        if changed_files:
-            query_parts.append(" ".join(changed_files[:10]))
-        if added_deps:
-            query_parts.append("dependency change: " + " ".join(added_deps[:5]))
-        if anti_patterns:
-            query_parts.append("anti-patterns: " + "; ".join(anti_patterns[:3]))
-        if env_vars:
-            query_parts.append("env vars: " + " ".join(env_vars[:3]))
-
-        if not modules and not query_parts:
+        if not changed_files and not modules:
             return user_message
 
-        # Query per module (not per step) for richer semantic matching
-        seen_ids: set[str] = set()
-        all_hits: list[dict] = []
+        # Build a rich query text matching our ChromaDB embedding format
+        query_parts = []
+        if modules:
+            query_parts.append("modules_touched: " + " ".join(modules[:6]))
+        if changed_files:
+            # Highlight high-risk files
+            risky = [f for f in changed_files if any(
+                k in f for k in ("pom.xml", "dispatcher", "ui.config", "package.json", ".any", ".vhost")
+            )]
+            if risky:
+                query_parts.append("key_files: " + " | ".join(risky[:5]))
+            else:
+                query_parts.append("files: " + " ".join(changed_files[:6]))
 
-        # Pipeline name from context — filters search to same pipeline only
-        pipeline_name = context.get("pipeline_name", "") or context.get(
-            "execution_summary", {}
-        ).get("pipeline_name", "")
+        commit_msg = commit_profile.get("commit_message", "")
+        if commit_msg:
+            query_parts.append(f"commit_message: {commit_msg[:100]}")
 
-        for module in (modules or ["build"]):
-            file_signal = " ".join(changed_files[:8])
-            module_query = f"{module} {file_signal} {' '.join(added_deps[:3])}"
+        query_text = "\n".join(query_parts)
 
-            hits = find_similar_failures(
-                error_type=module,
-                error_message=module_query,
-                key_lines=changed_files[:5],
-                step=module,
-                top_k=3,
-                pipeline=pipeline_name,
-            )
-            for h in hits:
-                if (
-                    h.get("pipeline") == "risk_analysis"
-                    or str(h.get("error_type", "")).startswith("risk_prediction_")
-                    or str(h.get("execution_id", "")).startswith("risk-")
-                ):
-                    continue
-                uid = h.get("execution_id", "") + h.get("error_type", "")
-                if uid not in seen_ids:
-                    seen_ids.add(uid)
-                    # Use metadata signal_weight if available, else fall back to similarity_score
-                    sig_weight = h.get("signal_weight") or h.get("similarity_score", 0.5)
-                    all_hits.append({
-                        **h,
-                        "_queried_module": module,
-                        "signal_weight": sig_weight,
-                    })
+        # Steps to query — check all Production-relevant steps
+        steps_to_query = ["securityTest", "build", "deploy"]
+
+        seen_ids: set = set()
+        all_hits: list = []
+
+        # Try new enriched ChromaDB first (has environment filter)
+        try:
+            import sys
+            from pathlib import Path
+            ml_path = str(Path(__file__).resolve().parents[2] / "devops-risk-ml")
+            if ml_path not in sys.path:
+                sys.path.insert(0, ml_path)
+            from etl.chroma_ingest import query_similar
+
+            for step in steps_to_query:
+                hits = query_similar(
+                    step=step,
+                    environment="prod",
+                    query_text=query_text,
+                    top_k=3,
+                )
+                for h in hits:
+                    uid = h.get("execution_id", "") + h.get("step", "")
+                    if uid not in seen_ids:
+                        seen_ids.add(uid)
+                        all_hits.append(h)
+        except Exception:
+            # Fall back to existing store if ML project not available
+            from vector_store.store import find_similar_failures
+            pipeline_name = context.get("pipeline_name", "") or ""
+            for step in steps_to_query:
+                hits = find_similar_failures(
+                    error_type=step,
+                    error_message=query_text,
+                    key_lines=changed_files[:5],
+                    step=step,
+                    top_k=3,
+                    pipeline=pipeline_name,
+                )
+                for h in hits:
+                    uid = h.get("execution_id", "") + h.get("step", "")
+                    if uid not in seen_ids:
+                        seen_ids.add(uid)
+                        all_hits.append(h)
 
         if not all_hits:
             return user_message
 
+        # Sort by similarity descending
+        all_hits.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+
         memory_block = (
-            "\n\n## SEMANTICALLY SIMILAR PAST INCIDENTS (weighted by relevance, not recurrence)\n"
-            "Matched against: changed files, added dependencies, modules touched, and anti-patterns.\n"
-            "Use similarity_score and signal_weight to calibrate confidence — "
-            "high similarity to same module+error = strong evidence.\n"
+            "\n\n## SIMILAR PAST PRODUCTION FAILURES (from real log data)\n"
+            "These are actual Production Pipeline failures with similar code changes.\n"
+            "source=live_log means real log content was parsed — highest confidence.\n"
+            "Filter: environment=prod only. Never includes dev/stage results.\n"
         )
-        for i, h in enumerate(all_hits, 1):
+
+        for i, h in enumerate(all_hits[:6], 1):
+            step        = h.get("step", "")
+            error_type  = h.get("error_type", "")
+            similarity  = h.get("similarity_score", 0)
+            source      = h.get("source", "unknown")
+            eid         = h.get("execution_id", "")
+            tenant      = h.get("tenant_id", "")
+
+            # Security-specific signals
+            sec_flags = []
+            for flag in ("crxde_active", "davex_active", "webdav_active",
+                         "dispatcher_config", "referrer_filter"):
+                if h.get(flag) == "1":
+                    sec_flags.append(flag)
+
+            # Git signals
+            git_info = []
+            if h.get("modules_touched"):
+                git_info.append(f"modules:{h['modules_touched']}")
+            if h.get("has_pom_change") == "1":
+                git_info.append("pom_changed")
+            if h.get("has_dispatcher") == "1":
+                git_info.append("dispatcher_changed")
+
             memory_block += (
-                f"\n[{i}] Execution {h.get('execution_id')} | "
-                f"module: {h.get('_queried_module')} | "
-                f"step: {h.get('step')} | type: {h.get('error_type')} | "
-                f"similarity: {h.get('similarity_score')} | "
-                f"signal_weight: {h.get('signal_weight')}\n"
-                f"  Root cause : {h.get('root_cause', '')}\n"
-                f"  Fix applied: {h.get('fix', '')}\n"
+                f"\n[{i}] execution:{eid} tenant:{tenant} "
+                f"step:{step} similarity:{similarity} source:{source}\n"
             )
+            if error_type:
+                memory_block += f"  error_type: {error_type}\n"
+            if sec_flags:
+                memory_block += f"  security_failures: {' '.join(sec_flags)}\n"
+            if git_info:
+                memory_block += f"  git_context: {' '.join(git_info)}\n"
+            # Include document excerpt (real parsed content)
+            doc = h.get("document", "")
+            if doc:
+                # Extract the most informative lines
+                relevant = [
+                    l for l in doc.splitlines()
+                    if any(k in l for k in ("warn_lines", "error_lines", "failed_checks",
+                                            "WARN", "ERROR", "Failed"))
+                ][:4]
+                if relevant:
+                    memory_block += "  evidence:\n"
+                    for line in relevant:
+                        memory_block += f"    {line.strip()}\n"
 
         return user_message + memory_block
 
@@ -534,25 +567,8 @@ def run_risk_analysis(bundle_or_context: Any) -> "RiskReport":
     user_msg = _enrich_risk_with_memory(_build_user_message(context), context)
     report   = run_structured(system, user_msg, RiskReport, CONFIGS["risk"])
 
-    # Risk predictions are not observed failures. Keep them out of failure_memory
-    # by default so future analyses do not learn from their own guesses.
-    if os.getenv("INGEST_RISK_PREDICTIONS", "").lower() not in ("1", "true", "yes"):
-        return report
-
-    try:
-        from vector_store.store import ingest_risk_report
-        # Build enriched metadata from commit_profile for future semantic retrieval
-        commit_profile: dict = context.get("commit_profile") or {}
-        enriched_context = {
-            **context,
-            "commit_modules": commit_profile.get("modules_touched") or [],
-            "commit_anti_patterns": commit_profile.get("anti_patterns") or [],
-            "confidence_score": getattr(report, "confidence_score", None),
-            "criticality_score": commit_profile.get("criticality_score"),
-        }
-        ingest_risk_report(report, enriched_context)
-    except Exception:
-        pass
+    # AI risk predictions are never stored back into ChromaDB.
+    # ChromaDB stores only real source evidence (parsed logs, git diffs).
 
     return report
 
@@ -843,13 +859,7 @@ def run_pinpoint_analysis(
     system = _load_prompt("pinpoint_failure.md")
     report = run_structured(system, user_msg, PinpointReport, CONFIGS["pinpoint"])
 
-    # Auto-store result in vector memory so future queries can find it
-    try:
-        from vector_store.store import ingest_pinpoint_report
-        ingest_pinpoint_report(report)
-    except Exception:
-        pass
-
+    # AI pinpoint results are not stored back into ChromaDB.
     return report
 
 
@@ -859,8 +869,8 @@ def run_pinpoint_markdown(
     parse_result: Any,
     code_findings: list,
     snippet_text: str = "",
-) -> str:
-    """Feature 5b: render PinpointReport as markdown."""
+) -> tuple:
+    """Feature 5b: render PinpointReport as markdown. Returns (markdown, report)."""
     report = run_pinpoint_analysis(
         execution_id, failed_step, parse_result, code_findings,
         snippet_text=snippet_text,
@@ -899,4 +909,82 @@ def run_pinpoint_markdown(
         for alt in report.alternative_causes:
             alt_loc = f":{alt.get('line_no')}" if alt.get("line_no") else ""
             lines.append(f"- `{alt.get('file','')}{alt_loc}` — {alt.get('reason','')}")
-    return "\n".join(lines)
+    return "\n".join(lines), report
+
+
+# ── Post-Failure LogSage Assessment (additive feature) ─────────────────────────
+
+def run_logsage_rca(
+    execution_id: str,
+    failed_step: str,
+    filtered_blocks: list,
+    pruning_stats: Optional[dict] = None,
+) -> "LogSageRCAReport":
+    """LogSage Stage 1: structured RCA from pruned log blocks."""
+    from models.post_failure_report import LogSageRCAReport
+
+    context = {
+        "execution_id": execution_id,
+        "failed_step": failed_step,
+        "filtered_log_blocks": filtered_blocks,
+        "pruning_stats": pruning_stats or {},
+    }
+    system = _load_prompt("logsage_rca.md")
+    user_msg = _build_user_message(context)
+    return run_structured(system, user_msg, LogSageRCAReport, CONFIGS["logsage_rca"])
+
+
+def run_post_failure_assessment(
+    rca: Any,
+    incidents: list,
+    *,
+    commit_context: Optional[dict] = None,
+    pipeline: str = "",
+    snippet_text: str = "",
+    filtered_blocks: Optional[list] = None,
+    pruning_stats: Optional[dict] = None,
+) -> "PostFailureRiskReport":
+    """LogSage Stage 2: hybrid RAG + post-failure risk report."""
+    from models.post_failure_report import PostFailureRiskReport
+
+    rca_dict = rca.model_dump() if hasattr(rca, "model_dump") else (rca or {})
+    commit_context = commit_context or {}
+
+    incident_models = []
+    for h in incidents[:15]:
+        incident_models.append({
+            "execution_id": str(h.get("execution_id", "")),
+            "step": str(h.get("step", "")),
+            "error_type": str(h.get("error_type", "")),
+            "root_cause": str(h.get("root_cause", h.get("problem", "")))[:400],
+            "fix": str(h.get("fix", ""))[:400],
+            "similarity_score": float(h.get("similarity_score", h.get("rerank_score", 0)) or 0),
+            "rerank_score": h.get("rerank_score"),
+            "route": str(h.get("route", "")),
+        })
+
+    context = {
+        "rca": rca_dict,
+        "pipeline": pipeline,
+        "commit_context": commit_context,
+        "retrieved_incidents": incident_models,
+        "filtered_log_blocks": filtered_blocks or [],
+        "pruning_stats": pruning_stats or {},
+    }
+    if snippet_text:
+        context["code_snippets"] = snippet_text[:4000]
+
+    system = _load_prompt("post_failure_risk.md")
+    user_msg = _build_user_message(context)
+    report = run_structured(system, user_msg, PostFailureRiskReport, CONFIGS["post_failure"])
+
+    # Ensure metadata from pipeline is preserved
+    data = report.model_dump()
+    data["filtered_log_blocks"] = filtered_blocks or data.get("filtered_log_blocks") or []
+    data["pruning_stats"] = pruning_stats or data.get("pruning_stats") or {}
+    data["pipeline"] = pipeline or data.get("pipeline") or ""
+    data["commit_sha"] = commit_context.get("commit_sha") or data.get("commit_sha")
+    if not data.get("similar_incidents") and incident_models:
+        data["similar_incidents"] = incident_models[:10]
+
+    return PostFailureRiskReport.model_validate(data)

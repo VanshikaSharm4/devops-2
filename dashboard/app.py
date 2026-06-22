@@ -13,10 +13,68 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 st.set_page_config(
-    page_title="DevOps Intelligence — IDFC · Program 19905",
+    page_title="DevOps Intelligence Platform",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Customer registry ─────────────────────────────────────────────────────────
+_CUSTOMERS = {
+    "IDFC First Bank": {
+        "program_id":    os.getenv("PROGRAM_ID_IDFC",    "19905"),
+        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_IDFC", "2357452"),
+        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_IDFC",  "47202398"),
+        "org_id":        "358458CC558C6B5D7F000101@AdobeOrg",
+        "tenant_id":     "idfc",
+        "short":         "IDFC",
+        "git_local_dir": os.getenv("IDFC_GIT_LOCAL_DIR", ""),
+    },
+    "HDFC Bank": {
+        "program_id":    os.getenv("PROGRAM_ID_HDFC",    "16360"),
+        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_HDFC", "43468192"),
+        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_HDFC",  "43472058"),
+        "org_id":        "3817033753EE89720A490D4D@AdobeOrg",
+        "tenant_id":     "hdfc",
+        "short":         "HDFC",
+        "git_local_dir": os.getenv("HDFC_GIT_LOCAL_DIR", ""),
+    },
+    "Malaysia Airlines": {
+        "program_id":    os.getenv("PROGRAM_ID_MALAYSIA", "465"),
+        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_MALAYSIA", "8302"),
+        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_MALAYSIA",  "1752536"),
+        "org_id":        "4D9676A8531512ED0A490D44@AdobeOrg",
+        "tenant_id":     "malaysia",
+        "short":         "MAS",
+        "git_local_dir": os.getenv("MALASIA_GIT_LOCAL_DIR", ""),
+    },
+    "Bajaj": {
+        "program_id":    None,
+        "pipeline_prod": None,
+        "pipeline_dev":  None,
+        "org_id":        None,
+        "tenant_id":     "bajaj",
+        "short":         "Bajaj",
+        "git_local_dir": "",
+    },
+}
+
+# Persist selected customer across reruns
+if "selected_customer" not in st.session_state:
+    st.session_state["selected_customer"] = "IDFC First Bank"
+
+# Apply selected customer — inject program ID into environment so ingest.py picks it up
+_active_customer = _CUSTOMERS.get(
+    st.session_state.get("selected_customer", "IDFC First Bank"),
+    _CUSTOMERS["IDFC First Bank"],
+)
+if _active_customer["program_id"]:
+    os.environ["PROGRAM_ID"]       = _active_customer["program_id"]
+if _active_customer["pipeline_prod"]:
+    os.environ["PIPELINE_ID_PROD"] = _active_customer["pipeline_prod"]
+if _active_customer.get("pipeline_dev"):
+    os.environ["PIPELINE_ID_DEV"]  = _active_customer["pipeline_dev"]
+if _active_customer.get("git_local_dir"):
+    os.environ["GIT_LOCAL_DIR"]    = _active_customer["git_local_dir"]
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 T = {
@@ -159,14 +217,20 @@ html, body, [class*="css"] {{
     max-width: 100% !important;
     min-width: 0 !important;
 }}
-/* Markdown must not block clicks on nav buttons beneath overlapping layers */
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {{
-    width: 100% !important;
-    max-width: 100% !important;
-    pointer-events: none !important;
+/* Selectbox always fully clickable and elevated */
+[data-testid="stSidebar"] [data-testid="stSelectbox"],
+[data-testid="stSidebar"] [data-testid="stSelectbox"] *,
+[data-testid="stSidebar"] [data-baseweb="select"],
+[data-testid="stSidebar"] [data-baseweb="select"] *,
+[data-testid="stSidebar"] [data-testid="element-container"]:has([data-testid="stSelectbox"]) {{
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    z-index: 99 !important;
 }}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] * {{
-    pointer-events: none !important;
+[data-baseweb="popover"], [data-baseweb="popover"] *,
+[role="listbox"], [role="listbox"] * {{
+    pointer-events: auto !important;
+    cursor: pointer !important;
 }}
 
 [data-testid="stSidebar"] {{
@@ -459,7 +523,7 @@ iframe[style*="height: 0"] {{
     overflow: hidden !important;
 }}
 [data-testid="stExpander"] summary {{
-    padding: 0.55rem 0 !important;
+    padding: 0.55rem 1rem !important;
     font-size: 0.83rem !important;
     font-weight: 500 !important;
     color: #333333 !important;
@@ -470,7 +534,7 @@ iframe[style*="height: 0"] {{
     color: #1A1A1A !important;
 }}
 [data-testid="stExpander"] [data-testid="stExpanderDetails"] {{
-    padding: 0.65rem 0 !important;
+    padding: 0.65rem 1rem !important;
     background: transparent !important;
 }}
 
@@ -517,7 +581,16 @@ iframe[style*="height: 0"] {{
 [data-testid="stTextInput"] [data-baseweb="input"],
 [data-testid="stNumberInput"] input,
 [data-testid="stTextArea"] textarea,
-[data-testid="stSelectbox"] > div > div,
+[data-testid="stSelectbox"] > div > div {{
+    background: #FFFFFF !important;
+    border: 1px solid #DEDEDE !important;
+    border-radius: 4px !important;
+    font-size: 0.84rem !important;
+    color: #1A1A1A !important;
+    -webkit-text-fill-color: #1A1A1A !important;
+    caret-color: #1A1A1A !important;
+    box-shadow: none !important;
+}}
 [data-testid="stSelectbox"] [data-baseweb="select"] {{
     background: #FFFFFF !important;
     border: 1px solid #DEDEDE !important;
@@ -527,6 +600,8 @@ iframe[style*="height: 0"] {{
     -webkit-text-fill-color: #1A1A1A !important;
     caret-color: #1A1A1A !important;
     box-shadow: none !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
 }}
 [data-testid="stTextInput"] input::placeholder,
 [data-testid="stTextArea"] textarea::placeholder {{
@@ -628,6 +703,7 @@ button[kind="secondary"]:hover {{
     font-size: 0.83rem !important;
     box-shadow: none !important;
     background: #FAFAFA !important;
+    padding: 10px 14px !important;
 }}
 
 /* ════════════════════════════════════
@@ -749,13 +825,20 @@ hr {{
 [data-testid="stCodeBlock"] > div,
 [data-testid="stCode"] > div,
 .stCodeBlock,
-div[data-testid="stCode"],
+div[data-testid="stCode"] {{
+    background-color: #F5F5F5 !important;
+    border: none !important;
+    border-radius: 3px !important;
+    color: #1A1A1A !important;
+    margin-bottom: 0.35rem !important;
+}}
 [data-testid="stMain"] pre {{
     background-color: #F5F5F5 !important;
     border: none !important;
     border-radius: 3px !important;
     color: #1A1A1A !important;
     margin-bottom: 0.35rem !important;
+    padding: 10px 14px !important;
 }}
 [data-testid="stCode"] pre,
 [data-testid="stCode"] code,
@@ -1136,7 +1219,7 @@ def action_list(items: list[str]) -> None:
     )
     st.markdown(
         f'<div style="background:{T["surface"]};border:1px solid {T["border"]};'
-        f'border-radius:10px;padding:0.25rem 1rem;margin-bottom:0.5rem">{rows}</div>',
+        f'border-radius:10px;padding:0.75rem 1rem;margin-bottom:0.5rem">{rows}</div>',
         unsafe_allow_html=True,
     )
 
@@ -1242,50 +1325,128 @@ def chart_theme(height: int = 280, show_legend: bool = False) -> dict:
     )
 
 
+# ── Background Splunk refresh ─────────────────────────────────────────────────
+import threading as _threading
+
+_splunk_refresh_lock  = _threading.Lock()
+_splunk_refresh_state = {"running": False, "done": False, "error": None}
+
+
+def _run_splunk_refresh_bg():
+    """Fetch fresh Splunk data in a background thread, save to cache."""
+    global _splunk_refresh_state
+    try:
+        from analysis.ingest import load_data, _save_cache
+        _pid = int(os.getenv("PROGRAM_ID", "19905"))
+        pipeline_df, failed_df, failed_steps_df, share_map = load_data(
+            program_id=_pid, force_refresh=True
+        )
+        _save_cache(pipeline_df, failed_df, failed_steps_df, share_map)
+        _splunk_refresh_state["done"]  = True
+        _splunk_refresh_state["error"] = None
+    except Exception as e:
+        _splunk_refresh_state["error"] = str(e)[:200]
+    finally:
+        _splunk_refresh_state["running"] = False
+
+
+def _maybe_start_bg_refresh(force: bool = False):
+    """Start background Splunk refresh if not running and cache is stale/empty."""
+    with _splunk_refresh_lock:
+        if _splunk_refresh_state["running"]:
+            return
+        try:
+            from analysis.ingest import _cache_is_fresh, _use_splunk_api, CACHE_FILE
+            if _use_splunk_api() and (force or not _cache_is_fresh()):
+                _splunk_refresh_state["running"] = True
+                _splunk_refresh_state["done"]    = False
+                t = _threading.Thread(target=_run_splunk_refresh_bg, daemon=True)
+                t.start()
+        except Exception:
+            pass
+
+
 # ── Shared data ───────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
-def load_splunk_data():
-    from analysis.ingest import load_data, CACHE_FILE, load_csv_data
-    import io, sys
+def load_splunk_data(program_id: str = "19905"):
+    """
+    Returns data instantly — never blocks the UI.
+    Priority: disk cache → CSV fallback → empty DataFrame.
+    Fresh Splunk fetch always runs in background via _maybe_start_bg_refresh().
+    """
+    import pandas as pd
+    from analysis.ingest import CACHE_DIR, load_csv_data, _cache_is_fresh, _cache_exists, _load_cache
 
-    # Capture ingest log lines so we can tell the UI which source was used
-    buf = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = buf
+    os.environ["PROGRAM_ID"] = program_id
+
+    pid_int = int(program_id)
+
+    # 1. Fresh per-customer cache — instant
+    if _cache_is_fresh(pid_int):
+        try:
+            pdf, fdf, fsteps, smap = _load_cache(pid_int)
+            return pdf, fdf, smap, "cache"
+        except Exception:
+            pass
+
+    # 2. Stale per-customer cache — still useful, bg refresh will update
+    if _cache_exists(pid_int):
+        try:
+            pdf, fdf, fsteps, smap = _load_cache(pid_int)
+            return pdf, fdf, smap, "stale_cache"
+        except Exception:
+            pass
+
+    # 3. CSV fallback (IDFC only)
+    if program_id == "19905":
+        try:
+            pdf, fdf, fsteps, smap = load_csv_data()
+            return pdf, fdf, smap, "csv"
+        except Exception:
+            pass
+
+    # 4. No data yet — background fetch needed
+    empty = pd.DataFrame()
+    return empty, empty, {}, "loading"
+
+
+
+def get_data_or_stop():
+    """
+    Load Splunk data for the active customer.
+    If data isn't ready yet (first fetch for this customer), shows a loading
+    message and stops rendering — never passes an empty DataFrame to pages.
+    """
+    _pid = _active_customer["program_id"] or "19905"
+    pdf, fdf, smap, src = load_splunk_data(_pid)
+    if pdf.empty and src == "loading":
+        _maybe_start_bg_refresh(force=True)
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;'
+            f'background:#F5F8FF;border:1px solid #C0D2FA;border-radius:6px;'
+            f'padding:14px 18px;font-size:13px;color:#1473E6;margin-top:20px">'
+            f'<span style="font-size:1.2rem">⟳</span>'
+            f'&nbsp;<div><strong>Fetching data for {_active_customer["short"]} from Splunk...</strong><br>'
+            f'<span style="font-size:12px;opacity:0.8">First load for this customer takes ~30 seconds. '
+            f'Click <b>Refresh Data</b> in the sidebar when ready.</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    # Auto-enrich pending predictions with actual outcomes from Splunk
     try:
-        pipeline_df, failed_df, failed_steps_df, share_map = load_data()
-    finally:
-        sys.stdout = old_stdout
-
-    log_output = buf.getvalue()
-    # Determine data source from log output
-    if "Splunk API unreachable" in log_output:
-        source = "csv_fallback_network"
-    elif "stale disk cache" in log_output:
-        source = "stale_cache"
-    elif "CSV exports" in log_output:
-        source = "csv"
-    elif "cached" in log_output or "cache" in log_output.lower():
-        source = "cache"
-    else:
-        source = "live"
-
-    # Auto-ingest real Azure logs for fresh failures into ChromaDB
-    # Runs silently — only stores records not yet in the store
-    try:
-        from vector_store.store import ingest_live_failures
-        prod_failed = failed_df[failed_df["pipelineName"] == "Production Pipeline"]
-        ingest_live_failures(prod_failed, share_map, pipeline_name="Production Pipeline")
+        from analysis.prediction_store import enrich_from_splunk
+        enrich_from_splunk(pdf, fdf)
     except Exception:
         pass
 
-    return pipeline_df, failed_df, share_map, source
+    return pdf, fdf, smap, src
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 _PAGE_ICONS = {
     "Overview":              ":material/dashboard:",
-    "Pipeline Intelligence": ":material/account_tree:",
     "Failure Analysis":      ":material/report_problem:",
     "Risk Assessment":       ":material/security:",
     "Failure Pinpoint":      ":material/my_location:",
@@ -1345,11 +1506,26 @@ def _render_sidebar():
 
     if _open:
         st.markdown(
-            f'<div style="height:40px;display:flex;align-items:center;padding:0 12px;overflow:hidden;white-space:nowrap">'
-            f'<p style="font-size:0.78rem;font-weight:700;color:#1A1A1A;margin:0;white-space:nowrap">DevOps Intelligence</p>'
+            f'<div style="padding:0 12px 4px;overflow:hidden;white-space:nowrap">'
+            f'<p style="font-size:0.78rem;font-weight:700;color:#1A1A1A;margin:0 0 2px 0">DevOps Intelligence</p>'
             f'</div>',
             unsafe_allow_html=True,
         )
+        # ── Customer selector ──
+        _cur = st.session_state.get("selected_customer", "IDFC First Bank")
+        _new = st.selectbox(
+            "Customer",
+            list(_CUSTOMERS.keys()),
+            index=list(_CUSTOMERS.keys()).index(_cur) if _cur in _CUSTOMERS else 0,
+            key="_customer_select",
+            label_visibility="collapsed",
+        )
+        if _new != _cur:
+            st.session_state["selected_customer"] = _new
+            st.session_state.pop("risk_report", None)
+            st.session_state.pop("risk_base_bundle", None)
+            st.cache_resource.clear()
+            st.rerun()
         st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
@@ -1422,12 +1598,41 @@ page = st.session_state.get("page", "Overview")
 if page == "Overview":
     section_header("Pipeline Health Overview", "Last 30 days &middot; Live from Splunk")
 
-    with st.spinner("Loading pipeline data..."):
-        try:
-            pipeline_df, failed_df, share_map, _data_source = load_splunk_data()
-        except Exception as e:
-            st.error(f"Failed to load data: {e}")
-            st.stop()
+    # Kick off background Splunk refresh (no-op if already fresh or running)
+    _maybe_start_bg_refresh()
+
+    # Show background fetch status banner
+    if _splunk_refresh_state["running"]:
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;'
+            f'background:#F5F8FF;border:1px solid #C0D2FA;border-radius:6px;'
+            f'padding:8px 14px;margin-bottom:10px;font-size:12px;color:#1473E6">'
+            f'<span>⟳</span>'
+            f'&nbsp;<strong>Fetching fresh data from Splunk in background</strong> — '
+            f'showing cached data. Click Refresh Data in sidebar when done.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    elif _splunk_refresh_state["done"]:
+        # Fresh data arrived — clear cache and reload once
+        st.cache_resource.clear()
+        _splunk_refresh_state["done"] = False
+        st.rerun()
+    elif _splunk_refresh_state["error"]:
+        st.markdown(
+            f'<div style="font-size:11px;color:#E79D13;margin-bottom:6px">'
+            f'⚠ Background Splunk fetch failed: {_splunk_refresh_state["error"]}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        _splunk_refresh_state["error"] = None
+
+    # Load instantly — never blocks
+    try:
+        pipeline_df, failed_df, share_map, _data_source = get_data_or_stop()
+    except Exception as e:
+        st.error(f"Failed to load data: {e}")
+        st.stop()
 
     # ── Data source banner ────────────────────────────────────────────────
     if _data_source in ("csv_fallback_network", "csv"):
@@ -1626,7 +1831,7 @@ if page == "Overview":
 elif page == "Failure Analysis":
     section_header("Failure Analysis", "AI-powered root cause analysis across all pipeline executions")
 
-    report_path = Path("reports/latest_report.json")
+    report_path = Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json")
 
     if report_path.exists():
         with open(report_path) as f:
@@ -1704,9 +1909,9 @@ elif page == "Failure Analysis":
         action_list(saved.get("top_recommended_actions", []))
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if Path("reports/latest_report.md").exists():
+        if Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.md").exists():
             with st.expander("View full markdown report"):
-                st.markdown(Path("reports/latest_report.md").read_text())
+                st.markdown(Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.md").read_text())
     else:
         st.info("No saved report found. Run an analysis to generate one.")
 
@@ -1721,11 +1926,11 @@ elif page == "Failure Analysis":
                 report = run_analysis(ctx, pipeline_df=_pdf, failed_df=_fdf)
 
                 os.makedirs("reports", exist_ok=True)
-                with open("reports/latest_report.json", "w") as f:
+                with open(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json", "w") as f:
                     json.dump(report.model_dump(mode="json"), f, indent=2)
-                st.success("Analysis complete. Reload the page to view results.")
                 st.cache_data.clear()
                 st.cache_resource.clear()
+                st.rerun()
             except Exception as e:
                 st.error(f"Analysis failed: {e}")
 
@@ -1739,23 +1944,46 @@ elif page == "Risk Assessment":
     # Load Splunk data for this page
     with st.spinner("Loading pipeline data..."):
         try:
-            pipeline_df, failed_df, share_map, _ra_source = load_splunk_data()
+            pipeline_df, failed_df, share_map, _ra_source = get_data_or_stop()
         except Exception as _e:
             st.error(f"Could not load data: {_e}")
             st.stop()
 
     # ── Dev-pipeline executions table ─────────────────────────────────────────
     with content_card():
-        section_label("Dev-Pipeline Executions", dark=True)
+        section_label("Non-Production Pipeline Executions", dark=True)
         st.markdown(
             f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0 0 10px 0">'
-            f'Click a <strong>FINISHED</strong> row to assess Production risk. '
-            f'Failed/Error rows block promotion immediately — no analysis needed.</p>',
+            f'Showing completed (FINISHED) non-production runs. '
+            f'Click a row to assess Production risk for that execution.</p>',
             unsafe_allow_html=True,
         )
 
-        _dev_df = pipeline_df[pipeline_df["pipelineName"] == "Dev-pipeline"].copy()
-        _dev_fdf = failed_df[failed_df["pipelineName"] == "Dev-pipeline"].copy()
+        # Show all NON-production pipelines for the selected customer
+        # Exclude the prod pipeline only — show everything else (dev, stage, UAT, QA etc.)
+        _prod_pid = str(_active_customer.get("pipeline_prod", "") or "")
+        if _prod_pid:
+            _dev_df  = pipeline_df[pipeline_df["pipelineId"].astype(str) != _prod_pid].copy()
+            _dev_fdf = failed_df[failed_df["pipelineId"].astype(str) != _prod_pid].copy() if "pipelineId" in failed_df.columns else failed_df.copy()
+        else:
+            # Fallback: exclude anything with "prod" in the name
+            _dev_df  = pipeline_df[~pipeline_df["pipelineName"].str.contains("Prod|prod|Production", case=False, na=False)].copy()
+            _dev_fdf = failed_df[~failed_df["pipelineName"].str.contains("Prod|prod|Production", case=False, na=False)].copy()
+
+        # CSV supplement only for IDFC (only customer with local CSV)
+        if _active_customer.get("tenant_id") == "idfc":
+            try:
+                from connectors.splunk_csv_reader import load_pipeline_list as _load_csv_pl, get_failed_executions as _load_csv_fe, load_failed_steps as _load_csv_fs
+                _csv_pdf = _load_csv_pl("data/splunk_exports/pipelines-list.csv")
+                _csv_dev = _csv_pdf[_csv_pdf["pipelineId"].astype(str) == str(_dev_pid)].copy() if _dev_pid else _csv_pdf[_csv_pdf["pipelineName"].str.contains("Dev|dev", case=False, na=False)].copy()
+                if not _csv_dev.empty:
+                    _dev_df = pd.concat([_dev_df, _csv_dev]).drop_duplicates("executionId")
+                    _csv_fsteps = _load_csv_fs("data/splunk_exports/first-failed-steps.csv")
+                    _csv_fdf = _load_csv_fe(_csv_pdf, _csv_fsteps)
+                    _csv_fdf_dev = _csv_fdf[_csv_fdf["pipelineId"].astype(str) == str(_dev_pid)].copy() if _dev_pid else _csv_fdf[_csv_fdf["pipelineName"].str.contains("Dev|dev", case=False, na=False)].copy()
+                    _dev_fdf = pd.concat([_dev_fdf, _csv_fdf_dev]).drop_duplicates("executionId")
+            except Exception:
+                pass
 
         # Merge step info onto dev executions
         if not _dev_fdf.empty and "firstFailedStep" in _dev_fdf.columns:
@@ -1764,6 +1992,9 @@ elif page == "Risk Assessment":
         else:
             _dev_df["firstFailedStep"] = ""
 
+        # Show FINISHED only — cancelled/failed/running don't need promotion assessment
+        _dev_df = _dev_df[_dev_df["Status"] == "FINISHED"].copy()
+        _dev_df = _dev_df.drop_duplicates("executionId")
         _dev_df = _dev_df.sort_values("Deploy Start Time", ascending=False)
 
         if _dev_df.empty:
@@ -1779,9 +2010,9 @@ elif page == "Risk Assessment":
                 )
             st.markdown(f'<hr style="margin:0 0 4px 0;border:none;border-top:1px solid {T["border"]}">', unsafe_allow_html=True)
 
-            _sel_dev = st.session_state.get("risk_dev_exec", "")
-            for _, _dr in _dev_df.head(15).iterrows():
-                _eid    = str(_dr.get("executionId", ""))
+            _sel_dev = str(st.session_state.get("risk_dev_exec", "") or "").strip()
+            for _dev_idx, (_dr_idx, _dr) in enumerate(_dev_df.head(25).iterrows()):
+                _eid    = str(_dr.get("executionId", "")).strip()
                 _status = str(_dr.get("Status", ""))
                 _step   = str(_dr.get("firstFailedStep", "") or "")
                 _step   = "" if _step == "nan" else _step
@@ -1803,7 +2034,7 @@ elif page == "Risk Assessment":
                 with _dc1:
                     if st.button(
                         _eid[-8:],
-                        key=f"_dev_{_eid}",
+                        key=f"_dev_{_dev_idx}_{_eid}",
                         use_container_width=True,
                         type="primary" if _is_sel else "secondary",
                         help=f"Execution {_eid}",
@@ -1818,6 +2049,65 @@ elif page == "Risk Assessment":
                 _dc3.markdown(f'<p style="font-size:0.78rem;color:{T["red"] if _step else T["text_muted"]};margin:6px 0">{_step or "—"}</p>', unsafe_allow_html=True)
                 _dc4.markdown(f'<p style="font-size:0.78rem;color:{T["text_muted"]};margin:6px 0">{_start_fmt}</p>', unsafe_allow_html=True)
                 _dc5.markdown(f'<p style="font-size:0.78rem;color:{T["text_muted"]};margin:6px 0">{_dur_str}</p>', unsafe_allow_html=True)
+
+    # ── Recent git commits ────────────────────────────────────────────────────
+    with content_card():
+        section_label("Recent Git Commits", dark=True)
+        st.markdown(
+            f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0 0 8px 0">'
+            f'No dev pipeline run yet? Select a commit for an early code-based risk estimate. '
+            f'<strong>Lower confidence</strong> — build outcome unknown.</p>',
+            unsafe_allow_html=True,
+        )
+        try:
+            from connectors.git_connector import get_recent_commits, get_sync_status
+            _gc_commits = get_recent_commits(n=15)
+            _gc_sync = get_sync_status()
+            if _gc_sync.get("age_minutes") is not None:
+                st.markdown(
+                    f'<p style="font-size:0.68rem;color:{T["text_muted"]};margin:0 0 6px 0">'
+                    f'Synced {_gc_sync["age_minutes"]} min ago</p>',
+                    unsafe_allow_html=True,
+                )
+            if _gc_commits:
+                _sel_sha = st.session_state.get("risk_commit_input", "")
+                _gc_hc = st.columns([1.2, 3.5, 1.5, 1.0])
+                for _gc_col, _gc_lbl in zip(_gc_hc, ["Commit", "Message", "Author", "When"]):
+                    _gc_col.markdown(
+                        f'<p style="font-size:0.67rem;font-weight:700;text-transform:uppercase;'
+                        f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0;padding:4px 0">{_gc_lbl}</p>',
+                        unsafe_allow_html=True,
+                    )
+                st.markdown(f'<hr style="margin:0 0 4px 0;border:none;border-top:1px solid {T["border"]}">', unsafe_allow_html=True)
+                for _gc_idx, _gc in enumerate(_gc_commits):
+                    _gc_sha  = _gc.get("sha", "")
+                    _gc_sha8 = _gc_sha[:8]
+                    _gc_title = _gc.get("title", "")[:65]
+                    _gc_author = _gc.get("author", "—")
+                    _gc_when = _gc.get("when", "—")
+                    _gc_is_sel = _sel_sha.startswith(_gc_sha8) and not st.session_state.get("risk_dev_exec")
+                    _gcc1, _gcc2, _gcc3, _gcc4 = st.columns([1.2, 3.5, 1.5, 1.0])
+                    with _gcc1:
+                        if st.button(
+                            _gc_sha8,
+                            key=f"_gc_{_gc_idx}_{_gc_sha8}",
+                            use_container_width=True,
+                            type="primary" if _gc_is_sel else "secondary",
+                            help=_gc_sha,
+                        ):
+                            st.session_state["risk_commit_input"] = _gc_sha
+                            st.session_state.pop("risk_dev_exec", None)
+                            st.session_state.pop("risk_dev_status", None)
+                            st.session_state.pop("risk_dev_step", None)
+                            st.session_state.pop("risk_report", None)
+                            st.rerun()
+                    _gcc2.markdown(f'<p style="font-size:0.78rem;color:{T["text"]};margin:6px 0">{_gc_title}</p>', unsafe_allow_html=True)
+                    _gcc3.markdown(f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:6px 0">{_gc_author[:20]}</p>', unsafe_allow_html=True)
+                    _gcc4.markdown(f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:6px 0">{_gc_when}</p>', unsafe_allow_html=True)
+            else:
+                st.info("No commits found. Check GIT_LOCAL_DIR in .env")
+        except Exception as _gc_e:
+            st.caption(f"Git repo unavailable: {_gc_e}")
 
     # ── SHA search bar (manual override) ──────────────────────────────────────
     st.markdown(
@@ -1879,43 +2169,120 @@ elif page == "Risk Assessment":
                 unsafe_allow_html=True,
             )
 
-        # FINISHED → run Production risk assessment
+        # FINISHED → LLM-based Production risk assessment (auto-runs immediately)
         elif _sel_status == "FINISHED":
+            # Step 1: try to get SHA from session state (already validated)
+            _auto_sha = st.session_state.get("risk_commit_input", "")
+            import re as _re_sha0
+            if _auto_sha and not _re_sha0.match(r"^[0-9a-f]{7,}", _auto_sha.lower()):
+                _auto_sha = ""
+
+            # Step 2: try Azure build log — contains "git checkout {SHA}"
+            if not _auto_sha:
+                _share = share_map.get(_sel_exec, "")
+                if _share:
+                    try:
+                        from connectors.azure_connector import get_file_from_share
+                        _blog = get_file_from_share(_share, "build.log")
+                        _sha_match = re.search(r"git checkout ([0-9a-f]{40})", _blog or "")
+                        if _sha_match:
+                            _auto_sha = _sha_match.group(1)
+                            st.session_state["risk_commit_input"] = _auto_sha
+                    except Exception:
+                        pass
+
+            # Step 3: pick most recent developer commit from local repo (no remote fetch)
+            if not _auto_sha:
+                try:
+                    import subprocess as _sp
+                    from connectors.git_connector import _local_dir, get_commit_diff
+                    _repo = _local_dir()
+                    _bot_authors = {"jenkins cicd", "jenkins", "bot", "automated"}
+                    # Get commits without triggering a remote fetch
+                    _log = _sp.run(
+                        ["git", "log", "--format=%H|||%an|||%s", "-n", "100"],
+                        cwd=_repo, capture_output=True, text=True, timeout=10,
+                        env={**__import__("os").environ, "GIT_TERMINAL_PROMPT": "0"}
+                    ).stdout.strip().splitlines()
+                    for _line in _log:
+                        parts = _line.split("|||", 2)
+                        if len(parts) < 2:
+                            continue
+                        _sha, _author, _msg = parts[0], parts[1], parts[2] if len(parts)>2 else ""
+                        if any(b in _author.lower() for b in _bot_authors):
+                            continue
+                        # Verify this SHA has actual file changes
+                        try:
+                            _diff_result = get_commit_diff(None, _sha)
+                            if _diff_result.get("changed_files"):
+                                _auto_sha = _sha
+                                st.session_state["risk_commit_input"] = _auto_sha
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            _sha_info = f" (SHA: `{_auto_sha[:12]}...`)" if _auto_sha else " (no SHA — using pipeline history only)"
             st.markdown(
                 f'<div style="background:rgba(45,157,92,0.07);border:1px solid rgba(45,157,92,0.3);'
-                f'border-left:4px solid {T["green"]};border-radius:6px;padding:12px 16px;margin:12px 0">'
+                f'border-left:4px solid {T["green"]};border-radius:6px;padding:10px 14px;margin:8px 0">'
                 f'<p style="font-size:0.83rem;color:{T["green"]};font-weight:600;margin:0">'
-                f'✓  Dev-pipeline passed — assessing Production-specific risks...</p>'
+                f'✓  Dev-pipeline passed — running Production risk assessment{_sha_info}</p>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            # Need commit SHA to run code analysis — try to find it from git history
-            _auto_sha = st.session_state.get("risk_commit_input", "")
-            if not _auto_sha:
-                st.info("Paste the commit SHA for this execution above to run the full Production risk assessment.")
-            else:
-                with st.spinner(f"Assessing Production risk for commit {_auto_sha[:8]}..."):
-                    try:
-                        from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
-                        from analysis.ingest import build_base_bundle
-                        if "risk_base_bundle" not in st.session_state:
-                            _base_bundle, _, _, _ = build_base_bundle(fetch_logs=False)
-                            st.session_state["risk_base_bundle"] = _base_bundle
-                        else:
-                            _base_bundle = st.session_state["risk_base_bundle"]
-                        _, report, md = run_pre_deploy_risk(
-                            commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
-                            bundle=_base_bundle,
-                        )
-                        save_risk_report(report, md, commit_sha=_auto_sha)
-                        st.session_state["risk_report"] = report.model_dump(mode="json")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Assessment failed: {e}")
+            if "risk_report" not in st.session_state:
+                with st.spinner(f"Assessing Production risk for {_auto_sha[:8]}..."):
+                        try:
+                            from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
+                            from analysis.ingest import build_base_bundle
+                            if "risk_base_bundle" not in st.session_state:
+                                _base_bundle, _, _, _ = build_base_bundle(fetch_logs=False)
+                                st.session_state["risk_base_bundle"] = _base_bundle
+                            else:
+                                _base_bundle = st.session_state["risk_base_bundle"]
+                            _, report, md = run_pre_deploy_risk(
+                                commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
+                                bundle=_base_bundle,
+                            )
+                            save_risk_report(report, md, commit_sha=_auto_sha)
+                            st.session_state["risk_report"] = report.model_dump(mode="json")
+                            # Save prediction as PENDING — will be resolved when actual outcome arrives
+                            try:
+                                from analysis.prediction_store import save_prediction
+                                save_prediction(
+                                    commit_sha=_auto_sha,
+                                    predicted_risk=getattr(report, "risk_level", ""),
+                                    predicted_step=getattr(report, "most_likely_failure_step", ""),
+                                    confidence=int(getattr(report, "confidence_score", 0) or 0),
+                                    program_id=_active_customer.get("program_id", "19905"),
+                                    execution_id=_sel_exec or "",
+                                    tenant_id=_active_customer.get("tenant_id", ""),
+                                    pipeline_name="Production Pipeline",
+                                    modules_at_risk=getattr(report, "modules_at_risk", []) or [],
+                                )
+                            except Exception:
+                                pass
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Assessment failed: {e}")
 
-    # ── SHA-only flow (no dev exec selected) ──────────────────────────────────
+    # ── Git commit flow (no dev exec selected, commit clicked from table or pasted) ──
     _auto_sha = st.session_state.get("risk_commit_input", "")
+    import re as _re_sha2
+    if _auto_sha and not _re_sha2.match(r"^[0-9a-f]{7,}", _auto_sha.lower()):
+        _auto_sha = ""
     if _auto_sha and not _sel_exec and "risk_report" not in st.session_state:
+        st.markdown(
+            f'<div style="background:rgba(201,137,0,0.07);border:1px solid rgba(201,137,0,0.3);'
+            f'border-left:4px solid {T["amber"]};border-radius:6px;padding:10px 14px;margin:8px 0">'
+            f'<p style="font-size:0.82rem;color:{T["amber"]};margin:0">'
+            f'⚠ Code-based estimate only — dev pipeline not run. '
+            f'Build outcome unknown. Confidence will be lower.</p>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         with st.spinner(f"Analysing commit {_auto_sha[:8]}..."):
             try:
                 from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
@@ -1931,6 +2298,21 @@ elif page == "Risk Assessment":
                 )
                 save_risk_report(report, md, commit_sha=_auto_sha)
                 st.session_state["risk_report"] = report.model_dump(mode="json")
+                try:
+                    from analysis.prediction_store import save_prediction
+                    save_prediction(
+                        commit_sha=_auto_sha,
+                        predicted_risk=getattr(report, "risk_level", ""),
+                        predicted_step=getattr(report, "most_likely_failure_step", ""),
+                        confidence=int(getattr(report, "confidence_score", 0) or 0),
+                        program_id=_active_customer.get("program_id", "19905"),
+                        execution_id="",
+                        tenant_id=_active_customer.get("tenant_id", ""),
+                        pipeline_name="",
+                        modules_at_risk=getattr(report, "modules_at_risk", []) or [],
+                    )
+                except Exception:
+                    pass
                 st.rerun()
             except Exception as e:
                 st.error(f"Assessment failed: {e}")
@@ -1961,30 +2343,70 @@ elif page == "Risk Assessment":
         except Exception:
             _meta = None
 
+        # Get execution start time for the dev exec if selected
+        _exec_start_time = ""
+        if _dev_eid and not _dev_df.empty:
+            _dev_row = _dev_df[_dev_df["executionId"] == _dev_eid]
+            if not _dev_row.empty:
+                _exec_start_time = str(_dev_row.iloc[0].get("Deploy Start Time", ""))
+                try:
+                    _exec_start_time = pd.to_datetime(
+                        _exec_start_time.replace(" PDT","").replace(" PST",""),
+                        errors="coerce"
+                    ).strftime("%b %d, %Y · %H:%M")
+                except Exception:
+                    pass
+
         if _sha or _meta:
-            _title_text = _meta["title"] if _meta else "—"
+            _title_text  = _meta["title"] if _meta else "—"
             _author_text = _meta["author"] if _meta else "—"
-            _when_text = _meta["when"] if _meta else "—"
+            _commit_when = _meta["when"] if _meta else "—"
             st.markdown(
                 f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
                 f'border-radius:10px;padding:0.7rem 1rem;margin-bottom:0.65rem;'
                 f'display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap">'
                 f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Commit</p>'
+                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Commit SHA</p>'
                 f'{id_chip(_sha, max_len=len(_sha))}</div>'
                 f'<div style="flex:1;min-width:160px"><p style="font-size:0.62rem;font-weight:700;'
-                f'text-transform:uppercase;letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Message</p>'
+                f'text-transform:uppercase;letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Commit Message</p>'
                 f'<p style="font-size:0.83rem;color:{T["text"]};margin:0;font-weight:500">{_title_text[:90]}</p></div>'
                 f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
                 f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Author</p>'
                 f'<p style="font-size:0.8rem;color:{T["text_sub"]};margin:0">{_author_text}</p></div>'
                 f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">When</p>'
-                f'<p style="font-size:0.8rem;color:{T["text_sub"]};margin:0">{_when_text}</p></div>'
-                f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Commit Date</p>'
+                f'<p style="font-size:0.8rem;color:{T["text_sub"]};margin:0">{_commit_when}</p></div>'
+                + (
+                    f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
+                    f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Pipeline Run</p>'
+                    f'<p style="font-size:0.8rem;color:{T["text"]};margin:0;font-weight:600">{_exec_start_time}</p></div>'
+                    if _exec_start_time else ""
+                )
+                + f'<div><p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
                 f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 0.2rem 0">Environment</p>'
                 f'<span style="background:{T["blue"]}18;color:{T["blue"]};border:1px solid {T["blue"]}44;'
                 f'padding:2px 8px;border-radius:4px;font-size:0.72rem;font-weight:600">AEM Cloud Manager</span></div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── ML prediction banner (no ChromaDB) ────────────────────────────────
+        _ml = r.get("ml_prediction") or st.session_state.get("ml_prediction")
+        if _ml:
+            _rec = _ml.get("promotion_recommendation", "HOLD")
+            _score = _ml.get("overall_risk_score", 0)
+            _rec_col = {"GO": T["green"], "HOLD": T["amber"], "NO_GO": T["red"]}.get(_rec, T["gray"])
+            _step_probs = _ml.get("step_probabilities", {})
+            _steps_html = " · ".join(f"{k}: {_step_probs[k]:.0%}" for k in _step_probs if k != "overall")
+            st.markdown(
+                f'<div style="background:{T["surface2"]};border:2px solid {_rec_col};'
+                f'border-radius:10px;padding:14px 18px;margin-bottom:12px">'
+                f'<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 6px 0">ML Risk Score</p>'
+                f'<p style="font-size:1.6rem;font-weight:700;color:{_rec_col};margin:0 0 4px 0">'
+                f'{_score:.0%} — {_rec}</p>'
+                f'<p style="font-size:0.78rem;color:{T["text_sub"]};margin:0">{_steps_html}</p>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -2349,33 +2771,30 @@ elif page == "Risk Assessment":
                         f'{_file_chips}{_extra_files}</div>'
                     ) if _changed_files else ""
 
-                    _expander_label = f"{_score}%  ·  {_step or '—'}{'  · recurring' if _is_recur else ''}  ·  {_src_label}"
-                    with st.expander(_expander_label, expanded=False):
-                        st.markdown(
-                            f'<div style="background:{T["surface"]};border:1px solid {_card_border};'
-                            f'border-radius:8px;padding:10px 13px;{_card_left}">'
-                            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
-                            f'<div style="background:{_sim_col}18;border:1px solid {_sim_col}44;'
-                            f'border-radius:5px;padding:2px 9px;min-width:46px;text-align:center">'
-                            f'<span style="font-size:0.78rem;font-weight:800;color:{_sim_col}">{_score}%</span>'
-                            f'</div>'
-                            f'<div style="flex:1;background:{T["border"]};border-radius:3px;height:5px">'
-                            f'<div style="width:{_score}%;height:5px;border-radius:3px;background:{_sim_col}"></div>'
-                            f'</div>'
-                            f'{_step_badge}{_recur_badge}'
-                            f'<span style="font-size:0.68rem;color:{_src_col};white-space:nowrap">'
-                            f'{_src_icon} {_src_label}</span>'
-                            f'</div>'
-                            f'{_files_html}'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        if _root_cause:
-                            st.markdown(f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["text_muted"]};margin:8px 0 4px 0">Root Cause</p>', unsafe_allow_html=True)
-                            st.markdown(f'<p style="font-size:0.82rem;color:{T["text"]};line-height:1.6;margin:0">{_root_cause}</p>', unsafe_allow_html=True)
-                        if _fix:
-                            st.markdown(f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["green"]};margin:10px 0 4px 0">Fix</p>', unsafe_allow_html=True)
-                            st.markdown(f'<p style="font-size:0.82rem;color:{T["text_sub"]};line-height:1.6;margin:0">{_fix}</p>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="background:{T["surface"]};border:1px solid {_card_border};'
+                        f'border-radius:8px;padding:12px 14px;{_card_left};margin-bottom:10px">'
+                        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
+                        f'<div style="background:{_sim_col}18;border:1px solid {_sim_col}44;'
+                        f'border-radius:5px;padding:2px 9px;min-width:46px;text-align:center">'
+                        f'<span style="font-size:0.78rem;font-weight:800;color:{_sim_col}">{_score}% Match</span>'
+                        f'</div>'
+                        f'<div style="flex:1;background:{T["border"]};border-radius:3px;height:5px">'
+                        f'<div style="width:{_score}%;height:5px;border-radius:3px;background:{_sim_col}"></div>'
+                        f'</div>'
+                        f'{_step_badge}{_recur_badge}'
+                        f'<span style="font-size:0.68rem;color:{_src_col};white-space:nowrap">'
+                        f'{_src_icon} {_src_label}</span>'
+                        f'</div>'
+                        f'{_files_html}'
+                        + (f'<hr style="margin:10px 0 8px 0;border:none;border-top:1px solid {T["border2"]}">'
+                           f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["text_muted"]};margin:6px 0 2px 0">Root Cause</p>'
+                           f'<p style="font-size:0.82rem;color:{T["text"]};line-height:1.55;margin:0 0 8px 0">{_root_cause}</p>' if _root_cause else "")
+                        + (f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["green"]};margin:6px 0 2px 0">Fix</p>'
+                           f'<p style="font-size:0.82rem;color:{T["text_sub"]};line-height:1.55;margin:0">{_fix}</p>' if _fix else "")
+                        + f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
             else:
                 st.markdown(
@@ -2397,227 +2816,231 @@ elif page == "Risk Assessment":
                 section_label("Recommended Actions")
                 action_list(_rec_actions)
 
-        # ── Technical Details (collapsed) ─────────────────────────────────────
-        with st.expander("TECHNICAL DETAILS", expanded=False):
-            _hypotheses = r.get("technical_failure_hypotheses", [])
-            _has_hypotheses = bool(_hypotheses)
+        # ── Technical Details ─────────────────────────────────────────────────
+        st.markdown('<div class="panel">', unsafe_allow_html=True)
+        section_label("TECHNICAL DETAILS", dark=True)
 
-            # ── Technical Failure Hypotheses ──────────────────────────────────
-            if _has_hypotheses:
-                with content_card():
-                    section_label("Technical Failure Hypotheses")
+        _hypotheses = r.get("technical_failure_hypotheses", [])
+        _has_hypotheses = bool(_hypotheses)
 
-                    def _hyp_chip_color(ftype: str) -> str:
-                        _ft = ftype.lower()
-                        if any(x in _ft for x in ("osgi_activation", "dependency_injection")):
-                            return "red"
-                        if any(x in _ft for x in ("classpath_conflict", "api_contract_mismatch")):
-                            return "amber"
-                        if any(x in _ft for x in ("auth_regression", "security")):
-                            return "red"
-                        if any(x in _ft for x in ("cache_invalidation", "config_propagation")):
-                            return "amber"
-                        if "deployment_ordering" in _ft:
-                            return "purple"
-                        if any(x in _ft for x in ("integration_timeout", "resource_resolver_leak")):
-                            return "amber"
-                        if any(x in _ft for x in ("serialization_failure", "schema_mismatch")):
-                            return "blue"
-                        return "gray"
+        # ── Technical Failure Hypotheses ──────────────────────────────────
+        if _has_hypotheses:
+            with content_card():
+                section_label("Technical Failure Hypotheses")
 
-                    _lk_color = {"High": "red", "Medium": "amber", "Low": "green"}
-                    _stage_color = {
-                        "build": "blue", "deploy": "amber", "securityTest": "red",
-                        "activation": "purple", "codeQuality": "gray",
-                    }
+                def _hyp_chip_color(ftype: str) -> str:
+                    _ft = ftype.lower()
+                    if any(x in _ft for x in ("osgi_activation", "dependency_injection")):
+                        return "red"
+                    if any(x in _ft for x in ("classpath_conflict", "api_contract_mismatch")):
+                        return "amber"
+                    if any(x in _ft for x in ("auth_regression", "security")):
+                        return "red"
+                    if any(x in _ft for x in ("cache_invalidation", "config_propagation")):
+                        return "amber"
+                    if "deployment_ordering" in _ft:
+                        return "purple"
+                    if any(x in _ft for x in ("integration_timeout", "resource_resolver_leak")):
+                        return "amber"
+                    if any(x in _ft for x in ("serialization_failure", "schema_mismatch")):
+                        return "blue"
+                    return "gray"
 
-                    def _chip(label, kind):
-                        _bg_map  = {"red": "#FEF0F0", "amber": "#FEFAE8", "green": "#EDFAF3",
-                                    "blue": "#EEF3FE", "purple": "#F3EEFF", "gray": "#F4F4F8"}
-                        _col_map = {"red": T["red"], "amber": T["amber"], "green": T["green"],
-                                    "blue": T["blue"], "purple": T["purple"], "gray": T["gray"]}
-                        _brd_map = {"red": "#FBCECE", "amber": "#F5E0A0", "green": "#BDECD3",
-                                    "blue": "#C0D2FA", "purple": "#D4C0F8", "gray": "#D8D8E8"}
+                _lk_color = {"High": "red", "Medium": "amber", "Low": "green"}
+                _stage_color = {
+                    "build": "blue", "deploy": "amber", "securityTest": "red",
+                    "activation": "purple", "codeQuality": "gray",
+                }
+
+                def _chip(label, kind):
+                    _bg_map  = {"red": "#FEF0F0", "amber": "#FEFAE8", "green": "#EDFAF3",
+                                "blue": "#EEF3FE", "purple": "#F3EEFF", "gray": "#F4F4F8"}
+                    _col_map = {"red": T["red"], "amber": T["amber"], "green": T["green"],
+                                "blue": T["blue"], "purple": T["purple"], "gray": T["gray"]}
+                    _brd_map = {"red": "#FBCECE", "amber": "#F5E0A0", "green": "#BDECD3",
+                                "blue": "#C0D2FA", "purple": "#D4C0F8", "gray": "#D8D8E8"}
+                    return (
+                        f'<span style="background:{_bg_map[kind]};color:{_col_map[kind]};'
+                        f'border:1px solid {_brd_map[kind]};padding:2px 9px;border-radius:20px;'
+                        f'font-size:0.7rem;font-weight:600;margin-right:5px">{label}</span>'
+                    )
+
+                for _h in _hypotheses:
+                    _ft    = _h.get("failure_type", "unknown")
+                    _lk    = _h.get("likelihood", "Medium")
+                    _cn    = _h.get("confidence", 0)
+                    _stage = _h.get("deployment_stage", "")
+                    _hc    = _hyp_chip_color(_ft)
+                    _lkc   = _lk_color.get(_lk, "gray")
+                    _stc   = _stage_color.get(_stage, "gray")
+
+                    _trigger = _h.get("trigger_mechanism", "")
+                    _impact  = _h.get("runtime_impact", "")
+                    _vsteps  = _h.get("verification_steps", [])
+                    _se      = _h.get("supporting_evidence", [])
+                    _ce      = _h.get("counterevidence", [])
+
+                    _vstep_html = "".join(
+                        f'<li style="font-size:0.82rem;color:{T["text"]};line-height:1.55;margin-bottom:0.25rem">{vs}</li>'
+                        for vs in _vsteps
+                    )
+                    _se_html = "  ·  ".join(
+                        f'<span style="font-size:0.74rem;color:{T["text_muted"]}">{e}</span>' for e in _se
+                    )
+                    _ce_html = " &nbsp;&middot;&nbsp; ".join(
+                        f'<em style="font-size:0.74rem;color:{T["text_muted"]}">{e}</em>' for e in _ce
+                    )
+
+                    def _field(label, value, label_color=None):
+                        lc = label_color or T["text_muted"]
                         return (
-                            f'<span style="background:{_bg_map[kind]};color:{_col_map[kind]};'
-                            f'border:1px solid {_brd_map[kind]};padding:2px 9px;border-radius:20px;'
-                            f'font-size:0.7rem;font-weight:600;margin-right:5px">{label}</span>'
+                            f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;'
+                            f'letter-spacing:0.08em;color:{lc};margin:0.6rem 0 0.2rem 0">{label}</p>'
+                            f'<p style="font-size:0.84rem;color:{T["text"]};line-height:1.55;margin:0">{value}</p>'
                         )
 
-                    for _h in _hypotheses:
-                        _ft    = _h.get("failure_type", "unknown")
-                        _lk    = _h.get("likelihood", "Medium")
-                        _cn    = _h.get("confidence", 0)
-                        _stage = _h.get("deployment_stage", "")
-                        _hc    = _hyp_chip_color(_ft)
-                        _lkc   = _lk_color.get(_lk, "gray")
-                        _stc   = _stage_color.get(_stage, "gray")
+                    st.markdown(
+                        f'<div style="background:{T["surface"]};border:1px solid {T["border"]};'
+                        f'border-radius:8px;padding:12px 14px;margin-bottom:10px">'
+                        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+                        f'<div>{_chip(_ft.replace("_", " "), _hc)}{(_chip(_stage, _stc) if _stage else "")}{_chip(_lk, _lkc)}</div>'
+                        f'<span style="font-size:0.75rem;font-weight:600;color:{T["text_muted"]}">Confidence: {_cn}%</span>'
+                        f'</div>'
+                        + (_field("Trigger", _trigger) if _trigger else "")
+                        + (_field("Runtime Impact", _impact) if _impact else "")
+                        + (f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{T["text_muted"]};margin:0.6rem 0 0.2rem 0">Verification Steps</p>'
+                           f'<ul style="margin:0;padding-left:1.25rem">{_vstep_html}</ul>' if _vsteps else "")
+                        + (_field("Evidence", _se_html) if _se else "")
+                        + (f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{T["amber"]};margin:0.6rem 0 0.2rem 0">Counterevidence</p>'
+                           f'<p style="margin:0">{_ce_html}</p>' if _ce else "")
+                        + f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                        _trigger = _h.get("trigger_mechanism", "")
-                        _impact  = _h.get("runtime_impact", "")
-                        _vsteps  = _h.get("verification_steps", [])
-                        _se      = _h.get("supporting_evidence", [])
-                        _ce      = _h.get("counterevidence", [])
+        # ── Primary Risk Drivers ───────────────────────────────────────────
+        _drivers = r.get("primary_risk_drivers", [])
+        if _drivers:
+            with content_card():
+                section_label("Primary Risk Drivers")
+                _sig_color = {"HIGH": T["red"], "MEDIUM": T["amber"], "LOW": T["green"]}
+                _sig_bg    = {"HIGH": "#FEF0F0", "MEDIUM": "#FEFAE8", "LOW": "#EDFAF3"}
+                _sig_brd   = {"HIGH": "#FBCECE", "MEDIUM": "#F5E0A0", "LOW": "#BDECD3"}
+                for _i, _d in enumerate(_drivers):
+                    _sig = _d.get("signal_strength", "MEDIUM")
+                    _sc  = _sig_color.get(_sig, T["gray"])
+                    _sb  = _sig_bg.get(_sig, "#F4F4F8")
+                    _sbr = _sig_brd.get(_sig, "#D8D8E8")
+                    _rf  = _d.get("related_file", "")
+                    _rf_html = (
+                        f'<code style="font-size:0.72rem;background:{T["surface2"]};'
+                        f'border:1px solid {T["border"]};padding:1px 6px;border-radius:4px;'
+                        f'color:{T["text_sub"]}">{_rf}</code>'
+                        if _rf else ""
+                    )
+                    st.markdown(
+                        f'<div style="display:flex;align-items:flex-start;gap:0.75rem;'
+                        f'padding:0.55rem 0;border-bottom:1px solid {T["border2"]}">'
+                        f'<span style="background:{_sb};color:{_sc};border:1px solid {_sbr};'
+                        f'padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:700;'
+                        f'flex-shrink:0;margin-top:2px;white-space:nowrap">{_sig}</span>'
+                        f'<div style="flex:1;min-width:0">'
+                        f'<p style="font-size:0.84rem;font-weight:600;color:{T["text"]};'
+                        f'margin:0 0 0.15rem 0;line-height:1.4">{_d.get("driver","")}</p>'
+                        f'<p style="font-size:0.76rem;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
+                        f'{_d.get("evidence_type","")} &nbsp;&middot;&nbsp; {_d.get("detail","")}</p>'
+                        f'{_rf_html}'
+                        f'</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                        _vstep_html = "".join(
-                            f'<li style="font-size:0.82rem;color:{T["text"]};line-height:1.55;margin-bottom:0.25rem">{vs}</li>'
-                            for vs in _vsteps
-                        )
-                        _se_html = "  ·  ".join(
-                            f'<span style="font-size:0.74rem;color:{T["text_muted"]}">{e}</span>' for e in _se
-                        )
-                        _ce_html = " &nbsp;&middot;&nbsp; ".join(
-                            f'<em style="font-size:0.74rem;color:{T["text_muted"]}">{e}</em>' for e in _ce
-                        )
+        # ── Step Risk Summary ──────────────────────────────────────────────
+        _step_risks = r.get("step_risks", [])
+        if _step_risks:
+            with content_card():
+                section_label("Step Risk Summary")
+                _slv_col = {"Critical": T["red"], "High": T["red"], "Medium": T["amber"], "Low": T["green"]}
+                _slv_bg  = {"Critical": "#FEF0F0", "High": "#FEF0F0", "Medium": "#FEFAE8", "Low": "#EDFAF3"}
+                _slv_brd = {"Critical": "#FBCECE", "High": "#FBCECE", "Medium": "#F5E0A0", "Low": "#BDECD3"}
+                for _sr in _step_risks:
+                    _slv = _sr.get("level", "Low")
+                    _scc = _slv_col.get(_slv, T["gray"])
+                    _scb = _slv_bg.get(_slv, "#F4F4F8")
+                    _scbr = _slv_brd.get(_slv, "#D8D8E8")
+                    st.markdown(
+                        f'<div style="display:flex;align-items:flex-start;gap:0.75rem;'
+                        f'padding:0.5rem 0;border-bottom:1px solid {T["border2"]}">'
+                        f'<span style="font-size:0.78rem;font-weight:700;color:{T["text_sub"]};'
+                        f'width:110px;flex-shrink:0;padding-top:2px">{_sr.get("step","")}</span>'
+                        f'<span style="background:{_scb};color:{_scc};border:1px solid {_scbr};'
+                        f'padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:700;'
+                        f'flex-shrink:0;white-space:nowrap">{_slv}</span>'
+                        f'<span style="font-size:0.8rem;color:{T["text_sub"]};line-height:1.5">'
+                        f'{_sr.get("rationale","")}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                        def _field(label, value, label_color=None):
-                            lc = label_color or T["text_muted"]
-                            return (
-                                f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;'
-                                f'letter-spacing:0.08em;color:{lc};margin:0.6rem 0 0.2rem 0">{label}</p>'
-                                f'<p style="font-size:0.84rem;color:{T["text"]};line-height:1.55;margin:0">{value}</p>'
-                            )
 
-                        st.markdown(
-                            f'<div style="background:{T["surface"]};border:1px solid {T["border"]};'
-                            f'border-radius:8px;padding:12px 14px;margin-bottom:10px">'
-                            f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
-                            f'<div>{_chip(_ft.replace("_", " "), _hc)}{(_chip(_stage, _stc) if _stage else "")}{_chip(_lk, _lkc)}</div>'
-                            f'<span style="font-size:0.75rem;font-weight:600;color:{T["text_muted"]}">Confidence: {_cn}%</span>'
+        # ── Blast Radius Analysis ─────────────────────────────────────────
+        _bra = r.get("blast_radius_analysis")
+        if _bra:
+            with content_card():
+                section_label("Blast Radius Analysis")
+                _dc_list = _bra.get("downstream_consumers", [])
+                _dc_str  = ", ".join(_dc_list) if _dc_list else "—"
+                info_row([
+                    ("Deployment Scope",      _bra.get("deployment_scope", "—")),
+                    ("Rollback Complexity",   _bra.get("rollback_complexity", "—")),
+                    ("Downstream Consumers", _dc_str),
+                    ("User-Facing Impact",   _bra.get("user_facing_impact", "—") or "—"),
+                ])
+
+        # ── Technical Rationale ───────────────────────────────────────────
+        _reasoning = r.get("reasoning", "") or ""
+        _narrative  = r.get("narrative", "") or ""
+        if _reasoning or _narrative:
+            with content_card():
+                section_label("Technical Rationale")
+                import re as _re
+                _text = _reasoning or _narrative
+                _sentences = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', _text) if len(s.strip()) > 20]
+
+                if len(_sentences) <= 1:
+                    st.code(_text, language=None)
+                else:
+                    _node_icons = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+                    _rows = ""
+                    for _idx, _sent in enumerate(_sentences[:10]):
+                        _icon = _node_icons[_idx] if _idx < len(_node_icons) else "·"
+                        _sent_lower = _sent.lower()
+                        _dot_col = T["blue"]
+                        if any(w in _sent_lower for w in ("risk", "fail", "break", "error", "high")):
+                            _dot_col = T["red"]
+                        elif any(w in _sent_lower for w in ("environment", "noise", "unrelated", "not caused", "infra")):
+                            _dot_col = T["amber"]
+                        elif any(w in _sent_lower for w in ("low", "safe", "no risk", "confidence")):
+                            _dot_col = T["green"]
+                        _is_last = _idx == len(_sentences[:10]) - 1
+                        _border = f'border-bottom:1px solid {T["border2"]}' if not _is_last else ''
+                        _rows += (
+                            f'<div style="display:flex;gap:0.85rem;align-items:flex-start;'
+                            f'padding:0.65rem 0;{_border}">'
+                            f'<div style="display:flex;flex-direction:column;align-items:center;'
+                            f'flex-shrink:0;padding-top:2px">'
+                            f'<span style="font-size:0.75rem;font-weight:700;color:{_dot_col};'
+                            f'width:20px;text-align:center">{_icon}</span>'
+                            + (f'<div style="width:2px;flex:1;background:{T["border2"]};margin-top:4px"></div>' if not _is_last else '')
+                            + f'</div>'
+                            f'<p style="font-size:0.83rem;color:{T["text"]};line-height:1.6;margin:0">{_sent}</p>'
                             f'</div>'
-                            + (_field("Trigger", _trigger) if _trigger else "")
-                            + (_field("Runtime Impact", _impact) if _impact else "")
-                            + (f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{T["text_muted"]};margin:0.6rem 0 0.2rem 0">Verification Steps</p>'
-                               f'<ul style="margin:0;padding-left:1.25rem">{_vstep_html}</ul>' if _vsteps else "")
-                            + (_field("Evidence", _se_html) if _se else "")
-                            + (f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{T["amber"]};margin:0.6rem 0 0.2rem 0">Counterevidence</p>'
-                               f'<p style="margin:0">{_ce_html}</p>' if _ce else "")
-                            + f'</div>',
-                            unsafe_allow_html=True,
                         )
-
-            # ── Primary Risk Drivers ───────────────────────────────────────────
-            _drivers = r.get("primary_risk_drivers", [])
-            if _drivers:
-                with content_card():
-                    section_label("Primary Risk Drivers")
-                    _sig_color = {"HIGH": T["red"], "MEDIUM": T["amber"], "LOW": T["green"]}
-                    _sig_bg    = {"HIGH": "#FEF0F0", "MEDIUM": "#FEFAE8", "LOW": "#EDFAF3"}
-                    _sig_brd   = {"HIGH": "#FBCECE", "MEDIUM": "#F5E0A0", "LOW": "#BDECD3"}
-                    for _i, _d in enumerate(_drivers):
-                        _sig = _d.get("signal_strength", "MEDIUM")
-                        _sc  = _sig_color.get(_sig, T["gray"])
-                        _sb  = _sig_bg.get(_sig, "#F4F4F8")
-                        _sbr = _sig_brd.get(_sig, "#D8D8E8")
-                        _rf  = _d.get("related_file", "")
-                        _rf_html = (
-                            f'<code style="font-size:0.72rem;background:{T["surface2"]};'
-                            f'border:1px solid {T["border"]};padding:1px 6px;border-radius:4px;'
-                            f'color:{T["text_sub"]}">{_rf}</code>'
-                            if _rf else ""
-                        )
-                        st.markdown(
-                            f'<div style="display:flex;align-items:flex-start;gap:0.75rem;'
-                            f'padding:0.55rem 0;border-bottom:1px solid {T["border2"]}">'
-                            f'<span style="background:{_sb};color:{_sc};border:1px solid {_sbr};'
-                            f'padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:700;'
-                            f'flex-shrink:0;margin-top:2px;white-space:nowrap">{_sig}</span>'
-                            f'<div style="flex:1;min-width:0">'
-                            f'<p style="font-size:0.84rem;font-weight:600;color:{T["text"]};'
-                            f'margin:0 0 0.15rem 0;line-height:1.4">{_d.get("driver","")}</p>'
-                            f'<p style="font-size:0.76rem;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
-                            f'{_d.get("evidence_type","")} &nbsp;&middot;&nbsp; {_d.get("detail","")}</p>'
-                            f'{_rf_html}'
-                            f'</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-            # ── Step Risk Summary ──────────────────────────────────────────────
-            _step_risks = r.get("step_risks", [])
-            if _step_risks:
-                with content_card():
-                    section_label("Step Risk Summary")
-                    _slv_col = {"Critical": T["red"], "High": T["red"], "Medium": T["amber"], "Low": T["green"]}
-                    _slv_bg  = {"Critical": "#FEF0F0", "High": "#FEF0F0", "Medium": "#FEFAE8", "Low": "#EDFAF3"}
-                    _slv_brd = {"Critical": "#FBCECE", "High": "#FBCECE", "Medium": "#F5E0A0", "Low": "#BDECD3"}
-                    for _sr in _step_risks:
-                        _slv = _sr.get("level", "Low")
-                        _scc = _slv_col.get(_slv, T["gray"])
-                        _scb = _slv_bg.get(_slv, "#F4F4F8")
-                        _scbr = _slv_brd.get(_slv, "#D8D8E8")
-                        st.markdown(
-                            f'<div style="display:flex;align-items:flex-start;gap:0.75rem;'
-                            f'padding:0.5rem 0;border-bottom:1px solid {T["border2"]}">'
-                            f'<span style="font-size:0.78rem;font-weight:700;color:{T["text_sub"]};'
-                            f'width:110px;flex-shrink:0;padding-top:2px">{_sr.get("step","")}</span>'
-                            f'<span style="background:{_scb};color:{_scc};border:1px solid {_scbr};'
-                            f'padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:700;'
-                            f'flex-shrink:0;white-space:nowrap">{_slv}</span>'
-                            f'<span style="font-size:0.8rem;color:{T["text_sub"]};line-height:1.5">'
-                            f'{_sr.get("rationale","")}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-
-            # ── Blast Radius Analysis ─────────────────────────────────────────
-            _bra = r.get("blast_radius_analysis")
-            if _bra:
-                with content_card():
-                    section_label("Blast Radius Analysis")
-                    _dc_list = _bra.get("downstream_consumers", [])
-                    _dc_str  = ", ".join(_dc_list) if _dc_list else "—"
-                    info_row([
-                        ("Deployment Scope",      _bra.get("deployment_scope", "—")),
-                        ("Rollback Complexity",   _bra.get("rollback_complexity", "—")),
-                        ("Downstream Consumers", _dc_str),
-                        ("User-Facing Impact",   _bra.get("user_facing_impact", "—") or "—"),
-                    ])
-
-            # ── Technical Rationale ───────────────────────────────────────────
-            _reasoning = r.get("reasoning", "") or ""
-            _narrative  = r.get("narrative", "") or ""
-            if _reasoning or _narrative:
-                with st.expander("Technical Rationale", expanded=False):
-                    import re as _re
-                    _text = _reasoning or _narrative
-                    _sentences = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', _text) if len(s.strip()) > 20]
-
-                    if len(_sentences) <= 1:
-                        st.code(_text, language=None)
-                    else:
-                        _node_icons = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
-                        _rows = ""
-                        for _idx, _sent in enumerate(_sentences[:10]):
-                            _icon = _node_icons[_idx] if _idx < len(_node_icons) else "·"
-                            _sent_lower = _sent.lower()
-                            _dot_col = T["blue"]
-                            if any(w in _sent_lower for w in ("risk", "fail", "break", "error", "high")):
-                                _dot_col = T["red"]
-                            elif any(w in _sent_lower for w in ("environment", "noise", "unrelated", "not caused", "infra")):
-                                _dot_col = T["amber"]
-                            elif any(w in _sent_lower for w in ("low", "safe", "no risk", "confidence")):
-                                _dot_col = T["green"]
-                            _is_last = _idx == len(_sentences[:10]) - 1
-                            _border = f'border-bottom:1px solid {T["border2"]}' if not _is_last else ''
-                            _rows += (
-                                f'<div style="display:flex;gap:0.85rem;align-items:flex-start;'
-                                f'padding:0.65rem 0;{_border}">'
-                                f'<div style="display:flex;flex-direction:column;align-items:center;'
-                                f'flex-shrink:0;padding-top:2px">'
-                                f'<span style="font-size:0.75rem;font-weight:700;color:{_dot_col};'
-                                f'width:20px;text-align:center">{_icon}</span>'
-                                + (f'<div style="width:2px;flex:1;background:{T["border2"]};margin-top:4px"></div>' if not _is_last else '')
-                                + f'</div>'
-                                f'<p style="font-size:0.83rem;color:{T["text"]};line-height:1.6;margin:0">{_sent}</p>'
-                                f'</div>'
-                            )
-                        st.markdown(
-                            f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
-                            f'border-radius:10px;padding:0.5rem 1.25rem">{_rows}</div>',
-                            unsafe_allow_html=True,
-                        )
+                    st.markdown(
+                        f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
+                        f'border-radius:10px;padding:0.5rem 1.25rem">{_rows}</div>',
+                        unsafe_allow_html=True,
+                    )
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2628,7 +3051,7 @@ elif page == "Failure Pinpoint":
 
     with st.spinner("Loading execution data..."):
         try:
-            pipeline_df, failed_df, share_map, _data_source = load_splunk_data()
+            pipeline_df, failed_df, share_map, _data_source = get_data_or_stop()
         except Exception as e:
             st.error(f"Could not load data: {e}")
             st.stop()
@@ -2655,7 +3078,10 @@ elif page == "Failure Pinpoint":
 
             # ── Clickable rows ────────────────────────────────────────────
             _sel_eid = st.session_state.get("pinpoint_exec_input", "")
-            for _, _row in failed_df.head(15).iterrows():
+            _pinpoint_df = failed_df.drop_duplicates("executionId").sort_values(
+                "Deploy Start Time", ascending=False
+            )
+            for _pp_idx, (_, _row) in enumerate(_pinpoint_df.head(15).iterrows()):
                 _eid   = str(_row.get("executionId", ""))
                 _pname = str(_row.get("pipelineName", "—"))
                 _step  = str(_row.get("firstFailedStep", "—"))
@@ -2669,7 +3095,7 @@ elif page == "Failure Pinpoint":
                 with _pc1:
                     if st.button(
                         _eid[:14],
-                        key=f"_pp_{_eid}",
+                        key=f"_pp_{_pp_idx}_{_eid}",
                         use_container_width=True,
                         type="primary" if _is_sel else "secondary",
                     ):
@@ -2684,8 +3110,9 @@ elif page == "Failure Pinpoint":
         else:
             st.info("No failed executions in the current data export.")
 
-    # Auto-run pinpoint when an execution is selected
     _auto_eid = st.session_state.get("pinpoint_exec_input", "")
+
+    # Auto-run pinpoint when an execution is selected
     if _auto_eid and "pinpoint_md" not in st.session_state:
         with st.spinner(f"Analysing execution {_auto_eid}..."):
             try:
@@ -2697,9 +3124,37 @@ elif page == "Failure Pinpoint":
                 st.session_state["pinpoint_md"]       = report_md
                 st.session_state["pinpoint_findings"] = findings
                 st.session_state["pinpoint_eid"]      = _auto_eid
+                # Auto-trigger log analysis immediately after pinpoint
+                st.session_state["post_failure_eid"]  = _auto_eid
+                st.session_state.pop("post_failure_md", None)
+                st.session_state.pop("post_failure_report", None)
                 st.rerun()
             except Exception as e:
                 st.error(f"Pinpoint failed: {e}")
+
+    # Auto-run log analysis when execution is selected and pinpoint is done
+    _pf_eid = st.session_state.get("post_failure_eid", "")
+    if _pf_eid and _pf_eid == _auto_eid and "post_failure_report" not in st.session_state:
+        with st.spinner(f"Analysing logs for {_pf_eid}..."):
+            try:
+                from analysis.post_failure_assessor import assess_failed_execution
+                _pf_report, _pf_md = assess_failed_execution(
+                    _pf_eid,
+                    use_llm=True,
+                    use_reranker=False,
+                    pipeline_df=pipeline_df,
+                    failed_df=failed_df,
+                    share_map=share_map,
+                )
+                st.session_state["post_failure_md"] = _pf_md
+                st.session_state["post_failure_report"] = (
+                    _pf_report.model_dump()
+                    if hasattr(_pf_report, "model_dump")
+                    else _pf_report
+                )
+                st.rerun()
+            except Exception:
+                pass  # log analysis is optional — don't block pinpoint results
 
     if "pinpoint_md" in st.session_state:
         eid       = st.session_state.get("pinpoint_eid", _auto_eid)
@@ -2818,6 +3273,40 @@ elif page == "Failure Pinpoint":
                     )
                     if f.get("line"):
                         st.code(f["line"])
+
+        # ── Log analysis summary (shown automatically after pinpoint) ──────────
+        if "post_failure_report" in st.session_state:
+            _pfr = st.session_state["post_failure_report"]
+            _rl = _pfr.get("risk_level", "")
+            _retry = _pfr.get("retry_recommendation", "")
+            _summary = _pfr.get("root_cause_summary", "")
+            _fix_steps = _pfr.get("fix_steps", [])
+            _rl_col = {"Critical": T["red"], "High": T["red"], "Medium": T["amber"], "Low": T["green"]}.get(_rl, T["blue"])
+
+            if _summary or _fix_steps:
+                st.markdown(
+                    f'<div style="background:{T["surface2"]};border-left:3px solid {_rl_col};'
+                    f'border-radius:4px;padding:12px 16px;margin-top:12px">'
+                    f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">'
+                    f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;'
+                    f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0">Log Analysis</p>'
+                    + (f'<span style="font-size:0.7rem;font-weight:700;color:{_rl_col};'
+                       f'background:{_rl_col}15;padding:1px 8px;border-radius:10px">{_rl}</span>'
+                       if _rl else "")
+                    + (f'<span style="font-size:0.7rem;color:{T["text_muted"]}">'
+                       f'Retry: <strong>{_retry}</strong></span>'
+                       if _retry else "")
+                    + f'</div>'
+                    + (f'<p style="font-size:0.82rem;color:{T["text"]};line-height:1.55;margin:0 0 8px 0">'
+                       f'{_summary}</p>' if _summary else "")
+                    + ("".join(
+                        f'<p style="font-size:0.8rem;color:{T["text_sub"]};margin:2px 0">'
+                        f'{i}. {s}</p>'
+                        for i, s in enumerate(_fix_steps[:4], 1)
+                    ) if _fix_steps else "")
+                    + f'</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2992,7 +3481,7 @@ elif page == "Memory Explorer":
             docs      = raw["documents"]
 
             df = pd.DataFrame(metas)
-            df["doc_preview"] = [d[:120] + "..." if len(d) > 120 else d for d in docs]
+            df["doc_preview"] = [d for d in docs]  # full text shown in expander
 
             tab_scatter, tab_breakdown, tab_records = st.tabs([
                 "Embedding Map", "Breakdown", "All Records"
@@ -3218,38 +3707,71 @@ elif page == "Memory Explorer":
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+                        # ── Security signals ──
+                        _sec_flags = [f for f in ("crxde_active","davex_active","webdav_active",
+                                       "dispatcher_config","referrer_filter","replication_admin")
+                                      if str(row.get(f,"")) == "1"]
+                        if _sec_flags:
+                            st.markdown(
+                                f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
+                                f'letter-spacing:0.07em;color:{T["red"]};margin:0 0 0.2rem 0">'
+                                f'Security Failures</p>'
+                                f'<p style="font-size:0.82rem;color:{T["text"]};margin:0 0 0.75rem 0">'
+                                f'{" · ".join(_sec_flags)}</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                        # ── Build error ──
+                        if row.get("build_error_type"):
+                            st.markdown(
+                                f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
+                                f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
+                                f'Build Error</p>'
+                                f'<p style="font-size:0.82rem;color:{T["text"]};margin:0 0 0.75rem 0">'
+                                f'{row.get("build_error_type","")} '
+                                f'{"· module: " + str(row["failing_module"]) if row.get("failing_module") and str(row.get("failing_module","")) not in ("","nan") else ""}</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                        # ── Error message ──
                         if row.get("error_message"):
                             st.markdown(
                                 f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
                                 f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
                                 f'Error Message</p>'
-                                f'<p style="font-size:0.82rem;color:{T["text_sub"]};'
-                                f'font-family:monospace;margin:0 0 0.75rem 0">'
+                                f'<p style="font-size:0.82rem;color:{T["text_sub"]};margin:0 0 0.75rem 0">'
                                 f'{row.get("error_message","")}</p>',
                                 unsafe_allow_html=True,
                             )
+
+                        # ── Git context ──
+                        _git_parts = []
+                        if row.get("modules_touched"): _git_parts.append(f"modules: {row['modules_touched']}")
+                        if str(row.get("has_pom_change","")) == "1": _git_parts.append("pom.xml changed")
+                        if str(row.get("has_dispatcher","")) == "1": _git_parts.append("dispatcher changed")
+                        if str(row.get("has_config_change","")) == "1": _git_parts.append("config changed")
+                        if row.get("commit_sha"): _git_parts.append(f"SHA: {row['commit_sha']}")
+                        if _git_parts:
+                            st.markdown(
+                                f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
+                                f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
+                                f'Git Context</p>'
+                                f'<p style="font-size:0.82rem;color:{T["text_sub"]};margin:0 0 0.75rem 0">'
+                                f'{" · ".join(_git_parts)}</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                        # ── Source + full embedded text ──
+                        _src = row.get("source","unknown")
+                        _src_col = T["green"] if _src == "live_log" else T["amber"]
                         st.markdown(
-                            f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
-                            f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
-                            f'Root Cause</p>'
-                            f'<p style="font-size:0.84rem;color:{T["text"]};'
-                            f'line-height:1.55;margin:0 0 0.75rem 0">'
-                            f'{row.get("root_cause","—")}</p>'
-                            f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
-                            f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.2rem 0">'
-                            f'Fix Applied</p>'
-                            f'<p style="font-size:0.84rem;color:{T["text"]};'
-                            f'line-height:1.55;margin:0 0 0.75rem 0">'
-                            f'{row.get("fix","—")}</p>',
+                            f'<span style="font-size:0.68rem;background:{_src_col}18;color:{_src_col};'
+                            f'border:1px solid {_src_col}44;padding:1px 7px;border-radius:10px">'
+                            f'source: {_src}</span>',
                             unsafe_allow_html=True,
                         )
-                        st.markdown(
-                            f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;'
-                            f'letter-spacing:0.07em;color:{T["text_muted"]};margin:0 0 0.3rem 0">'
-                            f'Embedded Text (what the model sees)</p>',
-                            unsafe_allow_html=True,
-                        )
-                        st.code(row.get("doc_preview", ""), language=None)
+                        with st.expander("Full embedded text (what the model sees)"):
+                            st.code(row.get("doc_preview", ""), language=None)
 
                 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -3280,432 +3802,6 @@ elif page == "Memory Explorer":
         st.error(f"Memory Explorer error: {e}")
         import traceback
         st.code(traceback.format_exc())
-
-
-# ═══════════════════════════════════════════════════════════
-# PAGE — PIPELINE INTELLIGENCE
-# ═══════════════════════════════════════════════════════════
-elif page == "Pipeline Intelligence":
-    import pandas as pd
-    import plotly.graph_objects as go
-
-    section_header(
-        "Pipeline Intelligence",
-        "30-day execution history &middot; click any run to see its failure breakdown",
-    )
-
-    with st.spinner("Loading pipeline data..."):
-        try:
-            pipeline_df, failed_df, share_map, _data_source = load_splunk_data()
-        except Exception as _e:
-            st.error(f"Failed to load data: {_e}")
-            st.stop()
-
-    # ── Merge failed step onto full execution list ──────────────────────────
-    _steps_df = failed_df[["executionId", "firstFailedStep"]].copy() if not failed_df.empty else pd.DataFrame(columns=["executionId", "firstFailedStep"])
-    _full = pipeline_df.merge(_steps_df, on="executionId", how="left")
-
-    # ── Git-log commit correlation ──────────────────────────────────────────
-    # Maps each executionId → {sha, sha_short, title, author}
-    # Runs once per page load; result cached by Streamlit's widget state.
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _load_commit_map(exec_rows_json: str) -> dict:
-        """Cached wrapper around correlate_executions_to_commits."""
-        import json
-        try:
-            from connectors.git_connector import correlate_executions_to_commits
-            rows = json.loads(exec_rows_json)
-            return correlate_executions_to_commits(rows)
-        except Exception as _ce:
-            return {}
-
-    _exec_rows_for_corr = _full[["executionId", "Deploy Start Time"]].to_dict(orient="records")
-    import json as _json
-    _commit_map: dict = _load_commit_map(_json.dumps(_exec_rows_for_corr, default=str))
-
-    # ── Compute per-pipeline statistics (used in summary cards + row badges) ─
-    def _pipeline_stats(df: pd.DataFrame) -> dict:
-        """Return failure probability metrics for a single pipeline's DataFrame."""
-        total   = len(df)
-        failed  = len(df[df["Status"].isin(["FAILED", "ERROR"])])
-        success = len(df[df["Status"] == "FINISHED"])
-        canc    = len(df[df["Status"] == "CANCELLED"])
-        fail_pct = round(failed / total * 100) if total else 0
-
-        # Step-level breakdown — only rows that actually have a failed step
-        step_counts = df["firstFailedStep"].dropna().value_counts().to_dict()
-
-        # Most probable failure stage
-        worst_step = max(step_counts, key=step_counts.get) if step_counts else None
-        worst_pct  = round(step_counts[worst_step] / total * 100) if worst_step else 0
-
-        # Success streak — consecutive FINISHED from the most recent run back
-        streak = 0
-        for s in df.sort_values("Deploy Start Time", ascending=False)["Status"]:
-            if s == "FINISHED":
-                streak += 1
-            else:
-                break
-
-        # Average duration of FINISHED runs
-        finished_rows = df[df["Status"] == "FINISHED"]["Duration (Min)"]
-        avg_dur = round(finished_rows.mean(), 1) if not finished_rows.empty else None
-
-        return {
-            "total": total, "failed": failed, "success": success,
-            "cancelled": canc, "fail_pct": fail_pct, "step_counts": step_counts,
-            "worst_step": worst_step, "worst_pct": worst_pct,
-            "streak": streak, "avg_dur": avg_dur,
-        }
-
-    _all_pipelines = _full["pipelineName"].unique().tolist()
-    _stats_by_pipeline = {
-        name: _pipeline_stats(_full[_full["pipelineName"] == name])
-        for name in _all_pipelines
-    }
-
-    # ── Helper: colour for a failure-% value ────────────────────────────────
-    def _risk_color(pct: int) -> str:
-        if pct >= 60:  return T["red"]
-        if pct >= 30:  return T["amber"]
-        return T["green"]
-
-    def _risk_label(pct: int) -> str:
-        if pct >= 60:  return "HIGH RISK"
-        if pct >= 30:  return "MEDIUM RISK"
-        return "LOW RISK"
-
-    def _status_color(status: str) -> str:
-        return {
-            "FINISHED":  T["green"],
-            "FAILED":    T["red"],
-            "ERROR":     T["red"],
-            "CANCELLED": T["amber"],
-        }.get(status, T["gray"])
-
-    def _status_icon(status: str) -> str:
-        return {
-            "FINISHED":  "✓",
-            "FAILED":    "✕",
-            "ERROR":     "⚠",
-            "CANCELLED": "◌",
-        }.get(status, "·")
-
-    # ════════════════════════════════════════════════════════
-    # SECTION A — Pipeline summary cards
-    # ════════════════════════════════════════════════════════
-    _ncards = len(_all_pipelines)
-    _card_cols = st.columns(_ncards, gap="medium")
-
-    STAGE_ORDER = ["build", "codeQuality", "securityTest", "deploy", "loadTest", "activation"]
-    STAGE_LABELS = {
-        "build": "Build", "codeQuality": "Code Quality",
-        "securityTest": "Security", "deploy": "Deploy",
-        "loadTest": "Load Test", "activation": "Activation",
-    }
-
-    for _ci, _pname in enumerate(_all_pipelines):
-        _s = _stats_by_pipeline[_pname]
-        _rc = _risk_color(_s["fail_pct"])
-        _rl = _risk_label(_s["fail_pct"])
-
-        with _card_cols[_ci]:
-            st.markdown(
-                f'<div style="background:{T["surface"]};border:1px solid {T["border"]};'
-                f'border-top:3px solid {_rc};border-radius:10px;padding:20px 22px 16px;">'
-
-                # Pipeline name + risk badge
-                f'<p style="font-size:0.72rem;font-weight:700;letter-spacing:0.09em;'
-                f'text-transform:uppercase;color:{T["text_muted"]};margin:0 0 4px 0">{_pname}</p>'
-                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">'
-                f'<span style="font-size:1.6rem;font-weight:800;color:{_rc}">{_s["fail_pct"]}%</span>'
-                f'<span style="font-size:0.68rem;font-weight:700;letter-spacing:0.1em;'
-                f'color:{_rc};background:{"rgba(255,99,99,0.1)" if _rc==T["red"] else "rgba(245,166,35,0.1)" if _rc==T["amber"] else "rgba(48,164,108,0.1)"};'
-                f'padding:2px 8px;border-radius:10px">{_rl}</div>'
-
-                # Stats row
-                f'<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">'
-                + "".join([
-                    f'<div><p style="font-size:0.68rem;color:{T["text_muted"]};margin:0">{lbl}</p>'
-                    f'<p style="font-size:0.95rem;font-weight:600;color:{col};margin:0">{val}</p></div>'
-                    for lbl, val, col in [
-                        ("Total Runs", _s["total"], T["text"]),
-                        ("Succeeded", _s["success"], T["green"]),
-                        ("Failed", _s["failed"], T["red"]),
-                        ("Cancelled", _s["cancelled"], T["amber"]),
-                    ]
-                ])
-                + f'</div>'
-
-                # Stage failure bar
-                + (
-                    f'<p style="font-size:0.7rem;font-weight:600;color:{T["text_muted"]};'
-                    f'margin:0 0 6px 0;text-transform:uppercase;letter-spacing:0.07em">Failures by Stage</p>'
-                    f'<div style="display:flex;flex-direction:column;gap:4px">'
-                    + "".join([
-                        f'<div style="display:flex;align-items:center;gap:8px">'
-                        f'<span style="font-size:0.72rem;color:{T["text_muted"]};min-width:70px">'
-                        f'{STAGE_LABELS.get(st_name, st_name)}</span>'
-                        f'<div style="flex:1;background:{T["surface2"]};border-radius:3px;height:6px">'
-                        f'<div style="width:{min(100,round(cnt/_s["total"]*100))}%;height:6px;'
-                        f'background:{_risk_color(round(cnt/_s["total"]*100))};border-radius:3px"></div>'
-                        f'</div>'
-                        f'<span style="font-size:0.72rem;color:{T["text_muted"]};min-width:24px;text-align:right">{cnt}</span>'
-                        f'</div>'
-                        for st_name in STAGE_ORDER
-                        if (cnt := _s["step_counts"].get(st_name, 0)) > 0
-                    ])
-                    + f'</div>'
-                    if _s["step_counts"] else
-                    f'<p style="font-size:0.78rem;color:{T["green"]};margin:0">No stage failures recorded</p>'
-                )
-
-                # Success streak
-                + (
-                    f'<div style="margin-top:12px;padding-top:10px;border-top:1px solid {T["border"]};'
-                    f'font-size:0.75rem;color:{T["text_muted"]}">'
-                    + (f'🔥 <span style="color:{T["green"]}"><b>{_s["streak"]}</b> successful run{"s" if _s["streak"]!=1 else ""}</span> in a row'
-                       if _s["streak"] > 0 else
-                       f'Last run did <span style="color:{T["amber"]}">not</span> succeed')
-                    + f'</div>'
-                )
-
-                + f'</div>',
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════
-    # SECTION B — Execution list (Adobe CM style)
-    # ════════════════════════════════════════════════════════
-    with content_card():
-        # ── Filter bar ──
-        _fc1, _fc2, _fc3 = st.columns([2, 2, 2], gap="small")
-        with _fc1:
-            _selected_pipeline = st.selectbox(
-                "Pipeline", ["All"] + _all_pipelines, key="_pi_pipe_filter"
-            )
-        with _fc2:
-            _selected_status = st.selectbox(
-                "Status", ["All", "FINISHED", "FAILED", "ERROR", "CANCELLED"],
-                key="_pi_status_filter"
-            )
-        with _fc3:
-            _max_rows = st.selectbox("Show", [25, 50, 100], key="_pi_rows")
-
-        # Apply filters
-        _view = _full.copy()
-        if _selected_pipeline != "All":
-            _view = _view[_view["pipelineName"] == _selected_pipeline]
-        if _selected_status != "All":
-            _view = _view[_view["Status"] == _selected_status]
-        _view = _view.sort_values("Deploy Start Time", ascending=False).head(_max_rows).reset_index(drop=True)
-
-        st.markdown(
-            f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0 0 12px 0">'
-            f'Showing <b style="color:{T["text"]}">{len(_view)}</b> executions</p>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Column headers ──
-        st.markdown(
-            f'<div style="display:grid;grid-template-columns:1.8fr 1.1fr 1.3fr 1.4fr 0.9fr 1.6fr 1.2fr 1.1fr;'
-            f'gap:0;padding:8px 14px;background:{T["surface2"]};border-radius:6px 6px 0 0;'
-            f'border:1px solid {T["border"]};margin-bottom:0">'
-            + "".join([
-                f'<span style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;'
-                f'text-transform:uppercase;color:{T["text_muted"]}">{h}</span>'
-                for h in ["Name", "Action", "Status", "Start Time", "Duration", "Commit", "Details", "Failure Risk"]
-            ])
-            + f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Rows ──
-        if _view.empty:
-            st.info("No executions match the current filters.")
-        else:
-            for _i, _row in _view.iterrows():
-                _eid   = str(_row["executionId"])
-                _pid   = str(_row.get("pipelineId", ""))
-                _pname = str(_row.get("pipelineName", ""))
-                _st    = str(_row.get("Status", ""))
-                _start = str(_row.get("Deploy Start Time", ""))
-                _dur   = _row.get("Duration (Min)", 0)
-                _step  = str(_row.get("firstFailedStep", "")) if pd.notna(_row.get("firstFailedStep")) else ""
-
-                # Format start time nicely
-                try:
-                    _dt = pd.to_datetime(_start).strftime("%b %d, %Y · %I:%M %p")
-                except Exception:
-                    _dt = _start[:19] if len(_start) > 10 else _start
-
-                # Format duration
-                _dur_h = int(_dur // 60)
-                _dur_m = int(_dur % 60)
-                _dur_str = (f"{_dur_h}h {_dur_m}m" if _dur_h else f"{_dur_m}m") if _dur else "—"
-
-                # Failure risk for this pipeline
-                _ps    = _stats_by_pipeline.get(_pname, {})
-                _fpct  = _ps.get("fail_pct", 0)
-                _rc    = _risk_color(_fpct)
-                _ws    = _ps.get("worst_step", "")
-
-                # Correlated commit for this execution
-                _commit = _commit_map.get(_eid, {})
-                _commit_sha   = _commit.get("sha_short", "")
-                _commit_title = _commit.get("title", "")
-                _commit_author = _commit.get("author", "")
-                _commit_full  = _commit.get("sha", "")
-
-                # Status styling
-                _sc = _status_color(_st)
-                _si = _status_icon(_st)
-
-                # ── Grid row aligned to the 8-column header ──
-                _commit_cell = (
-                    f'<code style="background:rgba(88,166,255,0.08);color:{T["blue"]};'
-                    f'padding:1px 5px;border-radius:3px;font-size:0.72rem">{_commit_sha}</code>'
-                    if _commit_sha else
-                    f'<span style="color:{T["text_muted"]}">—</span>'
-                )
-                _details_cell = (
-                    f'<span style="color:{T["red"]};font-size:0.78rem">{_step[:28]}{"…" if len(_step) > 28 else ""}</span>'
-                    if _step else
-                    f'<span style="color:{T["text_muted"]}">—</span>'
-                )
-                st.markdown(
-                    f'<div style="display:grid;grid-template-columns:1.8fr 1.1fr 1.3fr 1.4fr 0.9fr 1.6fr 1.2fr 1.1fr;'
-                    f'gap:0;padding:7px 14px;border-left:2px solid {_sc};'
-                    f'border-bottom:1px solid {T["border2"]};align-items:center">'
-                    f'<span style="font-size:0.8rem;color:{T["text"]};font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{_pname[:32]}{"…" if len(_pname)>32 else ""}</span>'
-                    f'<span style="font-size:0.78rem;color:{T["text_muted"]}">Run</span>'
-                    f'<span style="font-size:0.78rem;color:{_sc};font-weight:600">{_si} {_st}</span>'
-                    f'<span style="font-size:0.75rem;color:{T["text_muted"]}">{_dt[:16] if len(_dt) > 16 else _dt}</span>'
-                    f'<span style="font-size:0.78rem;color:{T["text"]}">{_dur_str}</span>'
-                    f'{_commit_cell}'
-                    f'{_details_cell}'
-                    f'<span style="font-size:0.78rem;color:{_rc};font-weight:600">{_fpct}%</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-                with st.expander(f"{_si} {_pname} — details", expanded=False):
-                    # ── Execution detail header ──────────────────────────────
-                    _d1, _d2 = st.columns([1, 1], gap="medium")
-
-                    with _d1:
-                        # Build commit block — shown only when we have a match
-                        _commit_block = ""
-                        if _commit_sha:
-                            _commit_block = (
-                                f'<div style="margin-top:12px;padding:10px 12px;'
-                                f'background:{T["surface"]};border:1px solid {T["border"]};'
-                                f'border-left:3px solid {T["blue"]};border-radius:6px">'
-                                f'<p style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;'
-                                f'text-transform:uppercase;color:{T["text_muted"]};margin:0 0 6px 0">'
-                                f'Correlated Commit</p>'
-                                f'<p style="font-size:0.82rem;margin:0 0 3px 0">'
-                                f'<code style="background:rgba(88,166,255,0.1);color:{T["blue"]};'
-                                f'padding:1px 6px;border-radius:4px;font-size:0.78rem">'
-                                f'{_commit_sha}</code>'
-                                f'&nbsp;<span style="color:{T["text"]};font-weight:500">'
-                                f'{_commit_title[:60]}{"…" if len(_commit_title)>60 else ""}</span></p>'
-                                f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0">'
-                                f'by {_commit_author}</p>'
-                                f'</div>'
-                            )
-                        elif _commit_map:
-                            # map was built but no match for this execution
-                            _commit_block = (
-                                f'<p style="font-size:0.75rem;color:{T["text_muted"]};'
-                                f'margin-top:10px">No commit found before this execution timestamp.</p>'
-                            )
-                        else:
-                            _commit_block = (
-                                f'<p style="font-size:0.75rem;color:{T["text_muted"]};'
-                                f'margin-top:10px">Git repo not synced — commit correlation unavailable.</p>'
-                            )
-
-                        st.markdown(
-                            f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
-                            f'border-radius:8px;padding:16px 18px">'
-                            f'<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;'
-                            f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 10px 0">Execution Details</p>'
-
-                            f'<div style="display:flex;flex-direction:column;gap:6px">'
-                            + "".join([
-                                f'<div style="display:flex;justify-content:space-between;'
-                                f'font-size:0.82rem">'
-                                f'<span style="color:{T["text_muted"]}">{k}</span>'
-                                f'<span style="color:{T["text"]};font-weight:500">{v}</span>'
-                                f'</div>'
-                                for k, v in [
-                                    ("Execution ID", _eid),
-                                    ("Pipeline", _pname),
-                                    ("Status", _st),
-                                    ("Start Time", _dt),
-                                    ("Duration", _dur_str),
-                                    ("Failed Stage", _step if _step else "—"),
-                                ]
-                            ])
-                            + f'</div>'
-                            + _commit_block
-                            + f'<div style="margin-top:12px">'
-                            f'<a href="https://experience.adobe.com/#/@idfc/cloud-manager/pipelineexecution.html/program/19905/pipeline/{_pid}/execution/{_eid}" '
-                            f'target="_blank" style="font-size:0.78rem;color:{T["blue"]};text-decoration:none">'
-                            f'View in Cloud Manager →</a>'
-                            f'</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                    with _d2:
-                        st.markdown(
-                            f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
-                            f'border-radius:8px;padding:16px 18px">'
-                            f'<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;'
-                            f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 10px 0">Pipeline Failure Risk (30-day History)</p>'
-
-                            f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">'
-                            f'<span style="font-size:2rem;font-weight:800;color:{_rc}">{_fpct}%</span>'
-                            f'<div>'
-                            f'<p style="font-size:0.72rem;font-weight:700;letter-spacing:0.09em;'
-                            f'color:{_rc};margin:0">{_risk_label(_fpct)}</p>'
-                            f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0">'
-                            f'{_ps.get("failed", 0)} failures in {_ps.get("total", 0)} runs</p>'
-                            f'</div>'
-                            f'</div>'
-
-                            # Stage bars
-                            + (
-                                f'<p style="font-size:0.7rem;font-weight:600;color:{T["text_muted"]};'
-                                f'margin:0 0 6px 0;text-transform:uppercase;letter-spacing:0.07em">Most Failures By Stage</p>'
-                                + "".join([
-                                    f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">'
-                                    f'<span style="font-size:0.72rem;color:{T["text_muted"]};min-width:75px">'
-                                    f'{STAGE_LABELS.get(st_n, st_n)}</span>'
-                                    f'<div style="flex:1;background:{T["border"]};border-radius:3px;height:8px">'
-                                    f'<div style="width:{min(100, round(cnt / max(1, _ps["total"]) * 100))}%;height:8px;'
-                                    f'border-radius:3px;background:{_risk_color(round(cnt / max(1, _ps["total"]) * 100))}">'
-                                    f'</div></div>'
-                                    f'<span style="font-size:0.72rem;color:{T["text"]};min-width:28px;text-align:right">'
-                                    f'{cnt} ({round(cnt / max(1, _ps["total"]) * 100)}%)</span>'
-                                    f'</div>'
-                                    for st_n in STAGE_ORDER
-                                    if (cnt := _ps.get("step_counts", {}).get(st_n, 0)) > 0
-                                ])
-                                if _ps.get("step_counts") else
-                                f'<p style="font-size:0.78rem;color:{T["green"]};margin:0">No stage failures in this pipeline</p>'
-                            )
-
-                            + f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-
-
 
 # ═══════════════════════════════════════════════════════════
 # PAGE — STATIC ANALYSIS

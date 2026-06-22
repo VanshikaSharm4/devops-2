@@ -357,7 +357,7 @@ def ingest_live_failures(
     For every failure in failed_df that has an Azure share and hasn't been
     ingested yet, fetch the real log, parse the actual error, and store it.
 
-    Azure shares expire in ~14 days — this must run while executions are fresh.
+    Azure shares are retained for extended periods — ingest while executions are fresh.
     Skips executions already in the store (idempotent).
     Returns number of NEW records stored.
     """
@@ -439,6 +439,25 @@ def ingest_live_failures(
         stored += 1
 
     return stored
+
+
+# ── Post-failure assessment ingest (additive) ─────────────────────────────────
+
+def ingest_post_failure_report(report: Any) -> str:
+    """Ingest a PostFailureRiskReport into failure_memory for future RAG."""
+    fix_text = "; ".join(getattr(report, "fix_steps", []) or [])[:400]
+    actions = "; ".join(getattr(report, "recommended_actions", []) or [])[:200]
+    return store_failure(
+        execution_id=getattr(report, "execution_id", "unknown"),
+        step=getattr(report, "failed_step", ""),
+        error_type=getattr(report, "error_type", "post_failure"),
+        error_message=getattr(report, "root_cause_summary", "")[:500],
+        key_lines=(getattr(report, "filtered_log_blocks", []) or [])[:5],
+        root_cause=getattr(report, "root_cause_summary", "")[:500],
+        fix=fix_text or actions,
+        pipeline=getattr(report, "pipeline", ""),
+        extra_meta={"source": "post_failure_assessment"},
+    )
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

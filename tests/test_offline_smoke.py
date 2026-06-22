@@ -306,6 +306,40 @@ def test_reactor_module_toggle_is_medium_packaging_risk():
     assert scores.securityTest == "HIGH"
 
 
+def test_post_failure_assessment_stage1_offline():
+    from pathlib import Path
+    from analysis.logsage import run_stage1
+
+    fixture = Path(__file__).parent / "fixtures" / "logs" / "failed_build_1.log"
+    log_text = fixture.read_text(encoding="utf-8")
+    result = run_stage1(log_text, failed_step="build", fetch_success=False)
+    assert len(result.filtered_blocks) >= 1
+    assert result.pruning_stats.get("blocks_selected", 0) >= 1
+
+
+def test_post_failure_assessor_no_llm():
+    from analysis.ingest import load_data
+
+    pipeline_df, failed_df, _, share_map = load_data(force_csv=True)
+    if failed_df.empty:
+        return
+    eid = str(failed_df.iloc[0]["executionId"])
+    from analysis.post_failure_assessor import assess_failed_execution
+
+    report, md = assess_failed_execution(
+        eid,
+        use_llm=False,
+        use_reranker=False,
+        fetch_logs=False,
+        pipeline_df=pipeline_df,
+        failed_df=failed_df,
+        share_map=share_map,
+    )
+    assert isinstance(report, dict)
+    assert "filtered_log_blocks" in report or "execution_id" in report
+    assert "Post-Failure" in md or eid in md
+
+
 def test_failure_memory_excludes_risk_predictions_by_default():
     from vector_store.store import _is_risk_prediction_meta
 
@@ -333,6 +367,8 @@ def main() -> None:
         test_rules_only_risk_report_is_valid,
         test_reactor_module_toggle_is_medium_packaging_risk,
         test_failure_memory_excludes_risk_predictions_by_default,
+        test_post_failure_assessment_stage1_offline,
+        test_post_failure_assessor_no_llm,
     ]
     for test in tests:
         test()

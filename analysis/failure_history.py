@@ -16,8 +16,24 @@ def build_failure_history(
     failure_patterns: List[Dict[str, Any]],
     error_details: List[ErrorDetail],
     pipeline_df: Optional[pd.DataFrame] = None,
+    pipeline_name_filter: Optional[str] = "Production Pipeline",
 ) -> FailureHistory:
-    """Aggregate 30-day patterns for risk scoring."""
+    """Aggregate failure patterns; optionally scoped to Production pipeline only."""
+    if pipeline_df is not None and pipeline_name_filter and "pipelineName" in pipeline_df.columns:
+        prod_ids = set(
+            pipeline_df[pipeline_df["pipelineName"] == pipeline_name_filter]["executionId"].astype(str)
+        )
+        if prod_ids and "executionId" in merged_df.columns:
+            merged_df = merged_df[merged_df["executionId"].astype(str).isin(prod_ids)]
+        prod_patterns = [
+            p for p in failure_patterns
+            if str(p.get("pipelineName", pipeline_name_filter)) == pipeline_name_filter
+            or str(p.get("pipeline", "")) == pipeline_name_filter
+        ]
+        if prod_patterns:
+            failure_patterns = prod_patterns
+        if prod_ids:
+            error_details = [e for e in error_details if str(e.execution_id) in prod_ids]
     by_step: Counter = Counter()
     by_module: Counter = Counter()
 

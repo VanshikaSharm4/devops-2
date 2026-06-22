@@ -1,6 +1,8 @@
 anthropic
 azure-storage-file-share
 chromadb
+drain3
+FlagEmbedding
 google-generativeai
 openai
 pandas
@@ -8,6 +10,8 @@ plotly
 pytest
 python-dotenv
 pydantic>=2.0
+rank-bm25
 requests
 scikit-learn
 streamlit
+tiktoken

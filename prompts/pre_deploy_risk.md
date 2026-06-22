@@ -60,6 +60,33 @@ All seven keys must be present. Values must be between 0.0 and 1.0, and together
 - 70–85: semantic match to past incident, or multiple anti-patterns detected
 - 86–100: same module + file pattern caused same failure before (similarity >= 0.85 with matching step)
 
+**Rule 8 — Recognise low-risk commit patterns and reduce risk accordingly.**
+
+Certain commit patterns are structurally low-risk for build failures even when they appear large. Identify these from the commit title BEFORE assigning risk:
+
+**Git subtree / submodule imports:**
+- Title matches: `"Add 'X/' from commit 'Y'"`, `"git subtree add"`, `"Merge commit 'X' as 'Y/'"`, `"Update submodule X"`
+- What it means: code was copied from a working, already-tested repository. It compiled and passed tests in its source repo.
+- Build risk: LOW regardless of lines added or files changed. A large line count here is expected and safe.
+- Correct behavior: lower build risk, note it is a subtree import, focus risk assessment on integration points (OSGi wiring, package filter conflicts) NOT compilation.
+
+**Automated / bot commits:**
+- Author matches: `Jenkins CICD`, `jenkins`, automated accounts
+- Title matches: `"Updated pom.xml file as per build parameters"`, `"Tagging version"`, `"Bump version"`
+- What it means: CI system made a routine automated change, not developer code.
+- Build risk: VERY LOW. Confidence should be 15–25% maximum. State explicitly: "automated commit with no meaningful code change."
+
+**Pure revert commits:**
+- Title matches: `"Revert"`, `"revert"`, `git revert`
+- What it means: undoing a previous change. If the previous state was stable, revert is safe.
+- Build risk: LOW. Note the revert and focus on whether the reverted code was the cause of instability.
+
+**Zero-file commits (empty diff):**
+- files_changed = 0, lines_added = 0
+- Build risk: NEAR ZERO. Confidence must be under 20%. State: "no files changed — no commit-caused build risk."
+
+When ANY of these patterns are detected, explicitly state it in `reasoning` and in the narrative, and set build step_risk to Low unless there is specific evidence otherwise.
+
 ---
 
 ## TECHNICAL FAILURE TYPE CATALOG
@@ -86,6 +113,7 @@ Use ONLY these failure_type values in technical_failure_hypotheses:
 Do not reveal hidden chain-of-thought. Use the `reasoning` field only for a concise causal rationale with evidence, counterevidence, and confidence calibration.
 
 Internally check this sequence before writing the JSON:
+0. **FIRST: Check `build_risk_override` in commit_profile.** If present, it is a hard system-level decision — you MUST set build step_risk to "Low" and reflect the override reason in your reasoning. Do NOT override it with your own analysis. This field is set by deterministic code analysis, not by you. Also check `is_subtree_import`, `is_automated_commit`, `is_empty_commit` flags — if any are true, build risk is LOW.
 1. What is the change_intent? Derive it from the commit title and profile.
 2. What modules did this commit touch? What is the blast radius?
 3. What specific change types are present? (deps, config, security, app code, CI/CD)

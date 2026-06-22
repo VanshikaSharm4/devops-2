@@ -65,6 +65,21 @@ class StepRisk(BaseModel):
     historical_failure_count: Optional[int] = None
 
 
+class FeatureContribution(BaseModel):
+    feature: str
+    value: float = 0.0
+    shap: float = 0.0
+
+
+class MLPrediction(BaseModel):
+    overall_risk_score: float = Field(ge=0, le=1)
+    step_probabilities: Dict[str, float] = Field(default_factory=dict)
+    risk_level: str = "Low"
+    promotion_recommendation: str = "HOLD"  # GO | HOLD | NO_GO
+    top_features: List[FeatureContribution] = Field(default_factory=list)
+    model_version: str = ""
+
+
 class RiskReport(BaseModel):
     risk_level: RiskLevel
     confidence_score: int = Field(ge=0, le=100)   # 0-100
@@ -84,6 +99,7 @@ class RiskReport(BaseModel):
     technical_failure_hypotheses: List[TechnicalFailureHypothesis] = Field(default_factory=list)
     blast_radius_analysis: Optional[BlastRadiusAnalysis] = None
     risk_contributions: Dict[str, float] = Field(default_factory=dict)
+    ml_prediction: Optional[MLPrediction] = None
     # risk_contributions keys: dependency_risk, config_risk, security_risk, blast_radius_risk,
     #                          regression_similarity, deployment_complexity, infra_instability
     # values: 0.0–1.0

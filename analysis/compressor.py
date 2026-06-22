@@ -128,6 +128,51 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
             "change_intent": inferred_change_intent,
         }
 
+    # ── Detect low-risk commit patterns and inject hard flags ────────────────
+    # These override LLM reasoning for patterns where risk is structurally low
+    import re as _re
+
+    _title_lower = title.lower()
+    _files_str   = " ".join(changed_files)
+
+    # Git subtree import: "Add 'X/' from commit 'Y'" or files all under one new dir
+    _is_subtree = (
+        bool(_re.search(r"add ['\"]?\S+/['\"]? from commit", _title_lower))
+        or bool(_re.search(r"git subtree (add|merge|push)", _title_lower))
+        or bool(_re.search(r"merge commit ['\"]?[0-9a-f]{7,}", _title_lower))
+        # Also detect by file pattern: all files under one new top-level dir
+        or (len(changed_files) > 50 and len({f.split("/")[0] for f in changed_files}) <= 2)
+    )
+
+    # Jenkins/bot auto-commit
+    _author_lower = (git_ctx.get("author") or "").lower()
+    _is_bot_commit = any(b in _author_lower for b in
+                         ["jenkins cicd", "jenkins", "automated", "bot@", "ci-bot"])
+
+    # Zero-file commit
+    _is_empty = len(changed_files) == 0
+
+    # Inject flags into commit_profile so the LLM sees them explicitly
+    if _is_subtree:
+        commit_profile_dict["is_subtree_import"] = True
+        commit_profile_dict["change_intent"]     = "subtree_import"
+        commit_profile_dict["build_risk_override"] = (
+            "LOW — git subtree import of externally tested code. "
+            "Build risk is low by definition; code compiled in source repo. "
+            "Focus only on OSGi integration and package filter conflicts."
+        )
+    if _is_bot_commit:
+        commit_profile_dict["is_automated_commit"] = True
+        commit_profile_dict["build_risk_override"] = (
+            "VERY LOW — automated CI/CD commit (Jenkins or bot). "
+            "No meaningful developer code change. Max confidence: 20%."
+        )
+    if _is_empty:
+        commit_profile_dict["is_empty_commit"] = True
+        commit_profile_dict["build_risk_override"] = (
+            "NEAR ZERO — no files changed. No commit-caused build risk possible."
+        )
+
     # Classify error_details
     error_details = bundle_dict.get("error_details") or []
     try:

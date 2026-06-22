@@ -157,6 +157,29 @@ def cmd_scan(args):
     print(f"  Total risks found: {len(risks)}")
 
 
+def cmd_assess_failure(args):
+    from analysis.post_failure_assessor import assess_failed_execution
+
+    print("=" * 60)
+    print("  DevOps AI Agent — Post-Failure Risk Assessment (LogSage)")
+    print("=" * 60)
+
+    report, md = assess_failed_execution(
+        args.execution_id,
+        use_llm=not args.no_llm,
+        use_reranker=not args.no_reranker,
+        fetch_logs=not args.no_logs,
+    )
+
+    os.makedirs("reports", exist_ok=True)
+    out = f"reports/post_failure_{args.execution_id}.md"
+    with open(out, "w") as f:
+        f.write(md)
+
+    print("\n" + md)
+    print(f"\n  Saved: {out}")
+
+
 def cmd_pinpoint(args):
     from analysis.code_analyzer import run_pinpoint
 
@@ -240,6 +263,15 @@ def main():
     p_pin = sub.add_parser("pinpoint", parents=[parent_flags], help="Feature 5b: Find which code line caused a failure")
     p_pin.add_argument("--execution-id", required=True, help="Cloud Manager execution ID")
     p_pin.set_defaults(func=cmd_pinpoint)
+
+    p_assess = sub.add_parser(
+        "assess-failure",
+        parents=[parent_flags],
+        help="Post-failure risk assessment (LogSage two-stage pipeline)",
+    )
+    p_assess.add_argument("--execution-id", required=True, help="Failed Cloud Manager execution ID")
+    p_assess.add_argument("--no-reranker", action="store_true", help="Skip BGE reranker (faster offline)")
+    p_assess.set_defaults(func=cmd_assess_failure)
 
     args = parser.parse_args()
 

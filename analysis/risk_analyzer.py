@@ -37,9 +37,15 @@ def attach_git_context(
     bundle.repo = os.getenv("CM_GIT_REPO_URL", "")
 
     if not commit_sha:
-        raise ValueError("--commit SHA is required (Cloud Manager Git has no PR API)")
+        # No SHA — run without git context (pipeline history features only)
+        bundle.git_context = GitContext(commit_sha="", changed_files=[], aem_modules_touched=[])
+        bundle.rule_scores = compute_rule_scores(bundle)
+        return bundle
 
-    data = get_commit_diff(repo, commit_sha)
+    try:
+        data = get_commit_diff(repo, commit_sha)
+    except Exception:
+        data = {}
     bundle.git_context = GitContext(
         commit_sha=commit_sha,
         title=data.get("title", ""),

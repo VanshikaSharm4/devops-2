@@ -18,7 +18,7 @@ BASE_URL   = "https://splunk-api.or1.adobe.net"
 EXPORT_URL = f"{BASE_URL}/servicesNS/admin/TA-AMS_ui/search/jobs/export"
 INDEX      = "ams_linux-os"
 SOURCETYPE = "ssg-summit-prod"
-EARLIEST   = "-30d"
+EARLIEST   = os.getenv("SPLUNK_EARLIEST", "-30d")
 LATEST     = "now"
 
 

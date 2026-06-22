@@ -1,0 +1,8 @@
+[INFO] Starting npm install
+[INFO] added 1234 packages in 45s
+[INFO] Running build task
+[ERROR] Module not found: Error: Can't resolve 'missing-package' in '/app/src'
+npm ERR! code ELIFECYCLE
+npm ERR! errno 1
+npm ERR! BUILD FAILURE
+[ERROR] Failed to run task: 'build' failed

@@ -643,10 +643,19 @@ def run_pinpoint(
         return findings, _format_pinpoint_markdown(execution_id, step, parsed, findings)
 
     from agent.devops_agent import run_pinpoint_markdown
-    return findings, run_pinpoint_markdown(
+    import json as _json, os as _os
+    md, report = run_pinpoint_markdown(
         execution_id, step, parsed, findings,
-        snippet_text=snippet_text,   # exact code window for the LLM
+        snippet_text=snippet_text,
     )
+    # Save structured report so the dashboard can show fix_before/fix_after
+    try:
+        _os.makedirs("reports", exist_ok=True)
+        with open(f"reports/pinpoint_{execution_id}.json", "w") as _f:
+            _json.dump(report.model_dump(mode="json"), _f, indent=2)
+    except Exception:
+        pass
+    return findings, md
 
 
 def _format_scan_markdown(risks: List[dict]) -> str:

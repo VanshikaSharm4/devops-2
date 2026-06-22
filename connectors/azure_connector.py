@@ -77,9 +77,9 @@ def list_files_in_share(share_name: str, directory: str = "") -> list:
     return items
 
 
-def get_log_for_execution(share_name: str, failed_step: str) -> str:
+def get_log_for_execution(share_name: str, failed_step: str, execution_id: str = "") -> str:
     """
-    Given an Azure share name and the step that failed,
+    Given an Azure share name, failed step, and execution ID,
     fetch the relevant log file for that step.
     """
     log_map = {
@@ -90,13 +90,19 @@ def get_log_for_execution(share_name: str, failed_step: str) -> str:
         "codeQuality":  "build_debug_logs_{eid}/build.log",
     }
 
-    # For steps where we don't know the execution ID from the share name, try root level
     file_path = log_map.get(failed_step, "build.log")
-
-    # Remove execution ID placeholder if present — caller should resolve it
-    file_path = file_path.replace("_{eid}", "")
+    if execution_id and "{eid}" in file_path:
+        file_path = file_path.replace("{eid}", execution_id)
+    else:
+        file_path = file_path.replace("_{eid}", "")
 
     try:
         return get_file_from_share(share_name, file_path)
     except Exception as e:
+        if execution_id and failed_step in ("build", "codeQuality"):
+            for alt in ("build.log", f"build_debug_logs_{execution_id}/build.log"):
+                try:
+                    return get_file_from_share(share_name, alt)
+                except Exception:
+                    continue
         return f"ERROR: Could not fetch log for step '{failed_step}' from share '{share_name}': {e}"

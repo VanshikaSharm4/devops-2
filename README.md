@@ -34,6 +34,7 @@ python3 cli.py report --no-llm --no-logs
 python3 cli.py risk --commit <sha> --no-llm
 python3 cli.py compare --exec-a <id> --exec-b <id> --no-llm
 python3 cli.py pinpoint --execution-id <id> --no-llm
+python3 cli.py assess-failure --execution-id <id> --no-llm --no-reranker
 streamlit run dashboard/app.py
 ```
 

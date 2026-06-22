@@ -24,11 +24,18 @@ PIPELINE_CSV    = "data/splunk_exports/pipelines-list.csv"
 FAILED_STEP_CSV = "data/splunk_exports/first-failed-steps.csv"
 SHARE_NAMES_CSV = "data/splunk_exports/share-names.csv"
 
-# Disk cache — keeps Splunk results so repeat loads are instant
+# Disk cache — one file per program ID so switching customers never loses data
 CACHE_DIR     = Path("data/cache")
-CACHE_FILE    = CACHE_DIR / "splunk_cache.pkl"
-# Default TTL: 30 min. Override with SPLUNK_CACHE_TTL_MINUTES env var.
 CACHE_TTL_MIN = int(os.getenv("SPLUNK_CACHE_TTL_MINUTES", "30"))
+
+
+def _cache_file(program_id: Optional[int] = None) -> Path:
+    pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
+    return CACHE_DIR / f"splunk_cache_{pid}.pkl"
+
+
+# Keep CACHE_FILE as an alias for the current program's cache (backward compat)
+CACHE_FILE = _cache_file()
 
 
 def _use_splunk_api() -> bool:
@@ -37,18 +44,25 @@ def _use_splunk_api() -> bool:
 
 # ── Disk cache helpers ────────────────────────────────────────────────────────
 
-def _cache_is_fresh() -> bool:
-    """True if cache file exists and is younger than CACHE_TTL_MIN."""
-    if not CACHE_FILE.exists():
+def _cache_is_fresh(program_id: Optional[int] = None) -> bool:
+    """True if cache file for this program exists and is younger than CACHE_TTL_MIN."""
+    cf = _cache_file(program_id)
+    if not cf.exists():
         return False
-    age_minutes = (time.time() - CACHE_FILE.stat().st_mtime) / 60
+    age_minutes = (time.time() - cf.stat().st_mtime) / 60
     return age_minutes < CACHE_TTL_MIN
 
 
-def _load_cache() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
-    with open(CACHE_FILE, "rb") as f:
+def _cache_exists(program_id: Optional[int] = None) -> bool:
+    """True if ANY cache exists for this program (fresh or stale)."""
+    return _cache_file(program_id).exists()
+
+
+def _load_cache(program_id: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    cf = _cache_file(program_id)
+    with open(cf, "rb") as f:
         data = pickle.load(f)
-    age = round((time.time() - CACHE_FILE.stat().st_mtime) / 60, 1)
+    age = round((time.time() - cf.stat().st_mtime) / 60, 1)
     print(f"  [ingest] Loaded from disk cache (age: {age} min, TTL: {CACHE_TTL_MIN} min)")
     return data["pipeline_df"], data["failed_df"], data["failed_steps_df"], data["share_map"]
 
@@ -58,16 +72,18 @@ def _save_cache(
     failed_df: pd.DataFrame,
     failed_steps_df: pd.DataFrame,
     share_map: Dict[str, str],
+    program_id: Optional[int] = None,
 ) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_FILE, "wb") as f:
+    cf = _cache_file(program_id)
+    with open(cf, "wb") as f:
         pickle.dump({
             "pipeline_df":    pipeline_df,
             "failed_df":      failed_df,
             "failed_steps_df": failed_steps_df,
             "share_map":      share_map,
         }, f)
-    print(f"  [ingest] Results cached to disk ({CACHE_FILE})")
+    print(f"  [ingest] Results cached to disk ({cf})")
 
 
 def clear_cache() -> None:
@@ -121,11 +137,8 @@ def load_live_data(
         share_names_dict = future_shares.result()
 
     failed_df = get_failed_executions(pipeline_df, failed_steps_df)
-    share_map = {
-        eid: sname
-        for eid, sname in share_names_dict.items()
-        if eid in set(failed_steps_df["executionId"].astype(str))
-    }
+    # Keep ALL share names (not just failed) — we may want logs for any execution
+    share_map = {str(eid): str(sname) for eid, sname in share_names_dict.items()}
     return pipeline_df, failed_df, failed_steps_df, share_map
 
 
@@ -156,26 +169,29 @@ def load_data(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     """
     Smart loader with disk cache:
-      1. Cache fresh?  → load from disk instantly
-      2. Splunk creds? → fetch in parallel, save to disk
-      3. Otherwise     → fall back to CSV exports
+      1. Cache fresh?  → load from disk instantly (share_map included)
+      2. Splunk creds? → fetch live, save to disk cache
+      3. Otherwise     → stale disk cache (no CSV fallback — CSV share names are expired)
 
+    Share names come from live Splunk or the pickle cache only.
+    The old share-names.csv is NOT used — those shares have expired.
     force_refresh=True skips the cache and re-fetches from Splunk.
     Override cache TTL with env var: SPLUNK_CACHE_TTL_MINUTES (default 30).
     """
+    pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
+
     if not force_csv and _use_splunk_api():
-        if not force_refresh and _cache_is_fresh():
-            return _load_cache()
+        if not force_refresh and _cache_is_fresh(pid):
+            return _load_cache(pid)
 
         print("  [ingest] Fetching from Splunk (3 parallel queries)...")
         try:
-            result = load_live_data(program_id)
-            _save_cache(*result)
+            result = load_live_data(pid)
+            _save_cache(*result, program_id=pid)
             return result
         except Exception as live_err:
             _err_msg = f"{type(live_err).__name__}: {live_err}"
             print(f"  [ingest] Splunk API failed — {_err_msg}")
-            # Persist the error so dashboard can show exact reason
             try:
                 import json as _j, time as _t
                 (CACHE_DIR / "splunk_error.json").write_text(
@@ -183,14 +199,18 @@ def load_data(
                 )
             except Exception:
                 pass
-            if CACHE_FILE.exists():
+            if _cache_exists(pid):
                 print("  [ingest] Falling back to stale disk cache...")
-                return _load_cache()
-            print("  [ingest] No cache — falling back to CSV exports...")
-            return load_csv_data()
+                return _load_cache(pid)
+            print("  [ingest] No cache — loading pipeline data from CSV, share_map empty...")
+            pdf, fdf, fsteps, _ = load_csv_data()
+            return pdf, fdf, fsteps, {}
     else:
-        print("  [ingest] Using CSV exports...")
-        return load_csv_data()
+        if _cache_exists(pid):
+            return _load_cache(pid)
+        print("  [ingest] Using CSV exports (no Splunk creds, no cache)...")
+        pdf, fdf, fsteps, _ = load_csv_data()
+        return pdf, fdf, fsteps, {}
 
 
 def collect_error_details(
@@ -216,7 +236,7 @@ def collect_error_details(
 
         if fetch_logs and share_name:
             print(f"  Fetching log for execution {execution_id} (step: {failed_step})...")
-            log_text = get_log_for_execution(share_name, failed_step)
+            log_text = get_log_for_execution(share_name, failed_step, execution_id)
             result = parse_log(failed_step, log_text)
             # parse_log returns LogParseResult (Pydantic); ErrorDetail.parsed_error expects dict
             parsed = result.model_dump() if hasattr(result, "model_dump") else result
