@@ -133,12 +133,127 @@ def run_pre_deploy_risk(
         md = _rules_only_markdown(bundle, report)
         return bundle, report, md
 
+    # ── Structural analysis first (deterministic, high confidence) ──────────────
+    try:
+        from analysis.build_predictor import predict_build_failures
+        import os as _os
+        git_ctx = bundle.git_context
+        if git_ctx:
+            repo_dir = _os.getenv("GIT_LOCAL_DIR", "")
+            structural = predict_build_failures(
+                diff_text     = git_ctx.diff_excerpt or "",
+                changed_files = git_ctx.changed_files or [],
+                commit_title  = git_ctx.title or "",
+                repo_dir      = repo_dir,
+            )
+            # If structural analysis is certain enough, inject findings into bundle context
+            if structural.is_structural and structural.findings:
+                # Add structural findings as a pre-computed signal for the LLM
+                bundle.__dict__["structural_findings"] = [
+                    {"check": f.check, "step": f.step, "severity": f.severity,
+                     "confidence": f.confidence, "title": f.title, "detail": f.detail}
+                    for f in structural.findings
+                ]
+                # If override — skip LLM entirely for build prediction
+                if structural.override_llm:
+                    from models.risk_report import RiskReport, StepRisk
+                    report = RiskReport(
+                        risk_level=structural.predicted_risk,
+                        confidence_score=structural.confidence,
+                        commit_sha=commit_sha or "",
+                        most_likely_failure_step=structural.predicted_step,
+                        modules_at_risk=git_ctx.aem_modules_touched or [],
+                        step_risks=[
+                            StepRisk(step="build", level=structural.predicted_risk,
+                                     historical_failure_count=0, rationale=structural.summary),
+                        ],
+                        recommended_actions=[f.title for f in structural.findings[:4]],
+                        narrative=structural.summary,
+                        reasoning=_build_structural_reasoning(structural),
+                    )
+                    return bundle, report, _structural_markdown(bundle, report, structural)
+    except Exception:
+        pass  # structural analysis is additive — never block LLM path
+
     from agent.devops_agent import run_risk_analysis
 
     bundle_dict = bundle.model_dump(mode="json")
     report = run_risk_analysis(bundle_dict)
     md = _report_to_markdown(bundle, report)
     return bundle, report, md
+
+
+def _build_structural_reasoning(structural) -> str:
+    """Build a human-readable reasoning string from structural findings."""
+    if not structural.findings:
+        return "No structural signals found."
+
+    high = [f for f in structural.findings if f.severity == "HIGH"]
+    med  = [f for f in structural.findings if f.severity == "MEDIUM"]
+
+    parts = []
+
+    # Explain the confidence score
+    parts.append(
+        f"Confidence {structural.confidence}% is based on {len(structural.findings)} "
+        f"structural check(s): {len(high)} HIGH and {len(med)} MEDIUM severity finding(s)."
+    )
+
+    # Explain each HIGH finding
+    for f in high[:3]:
+        check_explanations = {
+            "vault_filter_duplicate": (
+                f"Two content packages in this commit define the same JCR root path ({f.detail}). "
+                "When both install, they conflict — one will overwrite the other or fail entirely."
+            ),
+            "vault_filter_conflict": (
+                f"An existing package already owns this JCR path ({f.detail}). "
+                "Installing another package with the same root causes deployment ordering failures."
+            ),
+            "interface_method_removed": (
+                f"A public method was removed from an interface ({f.detail}). "
+                "All Java classes that implement or call this method will fail to compile."
+            ),
+            "osgi_unresolved_reference": (
+                f"A new @Reference annotation points to a service that has no @Service implementation in the repo ({f.detail}). "
+                "The OSGi bundle will fail to activate at deployment time."
+            ),
+            "maven_snapshot_dep": (
+                f"A SNAPSHOT dependency was added ({f.detail}). "
+                "SNAPSHOT versions are unstable — build servers may resolve a different or broken version each time."
+            ),
+        }
+        explanation = check_explanations.get(f.check, f.evidence)
+        parts.append(f"① {f.title}: {explanation}")
+
+    for f in med[:2]:
+        parts.append(f"② {f.title}: {f.evidence}")
+
+    parts.append(
+        "This assessment is deterministic — it is based on structural analysis of the code diff, "
+        "not probabilistic pattern matching. The findings above are certain failure conditions "
+        "unless the code is corrected before deployment."
+    )
+
+    return " ".join(parts)
+
+
+def _structural_markdown(bundle: AnalysisBundle, report: RiskReport, structural) -> str:
+    lines = [
+        f"# Pre-Deployment Risk Report (Structural Analysis)",
+        f"**Risk Level:** {report.risk_level}  |  **Confidence:** {report.confidence_score}%",
+        f"**Most Likely Failure:** {report.most_likely_failure_step}",
+        "",
+        "## Structural Findings",
+    ]
+    for f in structural.findings:
+        lines.append(f"- **[{f.severity}]** {f.title}")
+        lines.append(f"  - {f.detail}")
+        lines.append(f"  - *Evidence: {f.evidence}*")
+    lines += ["", "## Recommended Actions"]
+    for i, a in enumerate(report.recommended_actions or [], 1):
+        lines.append(f"{i}. {a}")
+    return "\n".join(lines)
 
 
 def _report_to_markdown(bundle: AnalysisBundle, report: RiskReport) -> str:

@@ -47,10 +47,23 @@ def save_prediction(
     """
     Save a new PENDING prediction. Returns the prediction ID.
     Called immediately when Risk Assessment produces a result.
+    If the same execution + commit already exists, skips writing and returns existing ID.
     """
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     pred_id = _prediction_id(commit_sha, execution_id, program_id)
+
+    # Deduplicate — don't write if same prediction already exists
+    if STORE_PATH.exists():
+        existing_ids = set()
+        with open(STORE_PATH, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    existing_ids.add(json.loads(line.strip()).get("id", ""))
+                except Exception:
+                    continue
+        if pred_id in existing_ids:
+            return pred_id  # already stored, skip
 
     record = {
         "id":             pred_id,
