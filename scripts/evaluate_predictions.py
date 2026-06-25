@@ -74,8 +74,8 @@ def get_completed_executions(cache):
 
 def determine_correctness(predicted_risk, actual_status, predicted_step, actual_failed_step):
     """Returns (correct, step_correct)."""
-    risk_lower = predicted_risk.lower() if predicted_risk else ""
-    status_upper = actual_status.upper() if actual_status else ""
+    risk_lower = str(predicted_risk).lower() if predicted_risk else ""
+    status_upper = str(actual_status).upper() if actual_status else ""
 
     if risk_lower == "low" and status_upper == "FINISHED":
         correct = True
@@ -84,9 +84,12 @@ def determine_correctness(predicted_risk, actual_status, predicted_step, actual_
     else:
         correct = False
 
-    # Step correctness
-    if predicted_step and actual_failed_step:
-        step_correct = predicted_step.lower().strip() == actual_failed_step.lower().strip()
+    # Step correctness — guard against NaN/float from pandas
+    pred = str(predicted_step).strip() if predicted_step and str(predicted_step) not in ("", "nan", "None") else ""
+    actual = str(actual_failed_step).strip() if actual_failed_step and str(actual_failed_step) not in ("", "nan", "None") else ""
+
+    if pred and actual:
+        step_correct = pred.lower() == actual.lower()
     else:
         step_correct = False
 
@@ -188,7 +191,13 @@ def run_evaluation():
         for _, row in sample.iterrows():
             exec_id = str(row["executionId"])
             actual_status = row["Status"]
-            actual_failed_step = row.get("firstFailedStep", None)
+            actual_failed_step_raw = row.get("firstFailedStep", None)
+            # Guard against NaN from pandas merge
+            import math
+            if actual_failed_step_raw is None or (isinstance(actual_failed_step_raw, float) and math.isnan(actual_failed_step_raw)):
+                actual_failed_step = None
+            else:
+                actual_failed_step = str(actual_failed_step_raw)
             pipeline_name = row.get("pipelineName", "")
 
             corr = sha_map.get(exec_id, {})
