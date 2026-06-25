@@ -52,16 +52,29 @@ class BuildPrediction:
 
 # ── Individual checks ─────────────────────────────────────────────────────────
 
-def _check_subtree_or_bot(signals: DiffSignals, title: str) -> Optional[BuildFinding]:
-    """Subtree imports and Jenkins commits are structurally low risk for build."""
-    if signals.is_subtree_import:
-        return BuildFinding(
-            check="subtree_import", step="build", severity="LOW", confidence=90,
-            title="Git subtree import — code pre-validated in source repo",
-            detail="All changed files are under one new directory",
-            evidence=f"Commit title matches subtree pattern: '{title[:60]}'"
-        )
-    return None
+_APP_CODE_EXTENSIONS = {".java", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".less", ".scss"}
+_APP_CODE_PATHS      = {"filter.xml", "ui.frontend", "ui.apps", "ui.content", "ui.config", "dispatcher"}
+
+
+def _is_submodule_release_bump(signals: DiffSignals) -> bool:
+    """
+    Returns True if the commit only touches submodule pointers + pom.xml — no app code.
+    Routine release bumps: consistently pass in production. No deployment_ordering_issue observed.
+    """
+    if not signals.changed_files:
+        return False
+    for f in signals.changed_files:
+        fl = f.lower()
+        if "pom.xml" in fl or ".gitmodules" in fl:
+            continue
+        if any(fl.endswith(ext) for ext in _APP_CODE_EXTENSIONS):
+            return False
+        if any(p in fl for p in _APP_CODE_PATHS):
+            return False
+    has_infra = any("pom.xml" in f.lower() or ".gitmodules" in f.lower() for f in signals.changed_files)
+    return has_infra
+
+
 
 
 def _check_new_maven_deps(signals: DiffSignals) -> List[BuildFinding]:
@@ -200,9 +213,14 @@ def predict_build_failures(
 
     all_findings: List[BuildFinding] = []
 
-    # Check 0: Subtree / bot — early exit with low risk
-    subtree_finding = _check_subtree_or_bot(signals, commit_title)
-    if subtree_finding:
+    # Check 0a: True subtree import — override LLM, code was pre-validated in source repo
+    if signals.is_subtree_import:
+        subtree_finding = BuildFinding(
+            check="subtree_import", step="build", severity="LOW", confidence=88,
+            title="Git subtree import — code pre-validated in source repo",
+            detail="All changed files are under one new directory",
+            evidence=f"Commit title matches subtree pattern: '{commit_title[:60]}'"
+        )
         return BuildPrediction(
             predicted_step = "none",
             predicted_risk = "Low",
@@ -210,7 +228,28 @@ def predict_build_failures(
             findings       = [subtree_finding],
             is_structural  = True,
             override_llm   = True,
-            summary        = "Git subtree import or automated commit — build risk is structurally low.",
+            summary        = "Git subtree import — code pre-validated in source repo. Build risk is structurally low.",
+        )
+
+    # Check 0b: Submodule pointer bump — informational only, DO NOT anchor risk.
+    # The submodule code is in a separate repo. We cannot assess build risk from this diff.
+    # Risk should be driven entirely by Splunk pipeline history and environment state.
+    # Do NOT set severity=MEDIUM here — that anchors the LLM to Medium regardless of history.
+    if _is_submodule_release_bump(signals):
+        return BuildPrediction(
+            predicted_step = "unknown",
+            predicted_risk = "Low",   # default — history will override via LLM
+            confidence     = 35,
+            findings       = [BuildFinding(
+                check="submodule_pointer_bump", step="build", severity="LOW", confidence=35,
+                title="Submodule pointer bump — no app code changed in parent repo",
+                detail="Only submodule pointers and pom.xml changed",
+                evidence="Build risk cannot be assessed from parent diff. "
+                         "Use pipeline history and environment state to determine actual risk.",
+            )],
+            is_structural  = False,   # not a real structural finding — informational only
+            override_llm   = False,
+            summary        = "Submodule pointer bump. No app code visible in this diff. Risk driven by pipeline history and environment state.",
         )
 
     # Check 1: Maven deps

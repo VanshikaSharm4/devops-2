@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DevOps Intelligence Platform — Data Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 40px 20px;
+    min-height: 100vh;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 0.78rem;
+    color: #64748b;
+    margin-bottom: 48px;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Layout ── */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* ── Phase labels ── */
+  .phase-row {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    gap: 16px;
+    margin-bottom: 0;
+  }
+  .phase-label {
+    width: 90px;
+    min-width: 90px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #475569;
+    padding-top: 18px;
+    text-align: right;
+  }
+
+  /* ── Node card ── */
+  .node {
+    border-radius: 10px;
+    padding: 14px 20px;
+    flex: 1;
+    position: relative;
+  }
+  .node-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .node-desc {
+    font-size: 0.72rem;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+  .node-tag {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-radius: 4px;
+    padding: 2px 7px;
+    margin-top: 6px;
+  }
+
+  /* ── Colors by type ── */
+  .c-git    { background: #1a2035; border: 1px solid #3b4f7a; }
+  .c-git .node-title { color: #7dd3fc; }
+  .c-git .node-tag   { background: #1e3a5f; color: #7dd3fc; }
+
+  .c-splunk { background: #1f1a2e; border: 1px solid #6b4fa0; }
+  .c-splunk .node-title { color: #c4b5fd; }
+  .c-splunk .node-tag   { background: #2d1f4a; color: #c4b5fd; }
+
+  .c-azure  { background: #1a2535; border: 1px solid #2d6a8f; }
+  .c-azure .node-title { color: #67e8f9; }
+  .c-azure .node-tag   { background: #1a3a4a; color: #67e8f9; }
+
+  .c-agent  { background: #1f2a1a; border: 1px solid #4a7a30; }
+  .c-agent .node-title { color: #86efac; }
+  .c-agent .node-tag   { background: #1a3a10; color: #86efac; }
+
+  .c-struct { background: #2a1f10; border: 1px solid #8a5a10; }
+  .c-struct .node-title { color: #fcd34d; }
+  .c-struct .node-tag   { background: #3a2a00; color: #fcd34d; }
+
+  .c-llm    { background: #2a1020; border: 1px solid #8a3060; }
+  .c-llm .node-title { color: #f9a8d4; }
+  .c-llm .node-tag   { background: #3a1030; color: #f9a8d4; }
+
+  .c-pred   { background: #1a2a1a; border: 1px solid #2a7a2a; }
+  .c-pred .node-title { color: #4ade80; }
+  .c-pred .node-tag   { background: #0a2a0a; color: #4ade80; }
+
+  .c-out    { background: #2a1a10; border: 1px solid #8a4a10; }
+  .c-out .node-title { color: #fb923c; }
+  .c-out .node-tag   { background: #3a1a00; color: #fb923c; }
+
+  /* ── Multi-node rows ── */
+  .node-row {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+  }
+  .node-row .node { flex: 1; }
+
+  /* ── Arrows ── */
+  .arrow {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 16px;
+    padding: 2px 0;
+  }
+  .arrow-spacer { width: 90px; min-width: 90px; }
+  .arrow-line {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .arrow-line svg { display: block; }
+  .arrow-label {
+    font-size: 0.62rem;
+    color: #475569;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+
+  /* ── Connector for side-by-side nodes ── */
+  .merge-arrow {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 16px;
+    padding: 4px 0;
+  }
+  .merge-arrow-spacer { width: 90px; min-width: 90px; }
+
+  /* ── Decision diamond ── */
+  .diamond-row {
+    display: flex;
+    width: 100%;
+    gap: 16px;
+    align-items: center;
+  }
+  .diamond-spacer { width: 90px; min-width: 90px; }
+  .diamond-wrap { flex: 1; display: flex; justify-content: center; }
+  .diamond {
+    width: 160px;
+    height: 60px;
+    background: #2a2010;
+    border: 1px solid #8a7020;
+    transform: rotate(0deg);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 8px 16px;
+    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+    background: #2a1f10;
+  }
+  .diamond-inner {
+    transform: rotate(0deg);
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #fbbf24;
+    text-align: center;
+    line-height: 1.3;
+  }
+
+  /* ── Branch labels ── */
+  .branch-row {
+    display: flex;
+    width: 100%;
+    gap: 16px;
+    padding: 4px 0;
+  }
+  .branch-spacer { width: 90px; min-width: 90px; }
+  .branch-labels {
+    flex: 1;
+    display: flex;
+    justify-content: space-around;
+    font-size: 0.65rem;
+    color: #64748b;
+    font-style: italic;
+  }
+
+  /* ── Store badge ── */
+  .store-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #0a1f0a;
+    border: 1px dashed #2a5a2a;
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 0.65rem;
+    color: #4ade80;
+    margin-top: 6px;
+  }
+
+  /* ── Section divider ── */
+  .divider {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 6px 0;
+  }
+  .divider-spacer { width: 90px; min-width: 90px; }
+  .divider-line { flex: 1; border-top: 1px dashed #1e293b; }
+  .divider-text {
+    position: absolute;
+    font-size: 0.6rem;
+    color: #334155;
+    background: #0f1117;
+    padding: 0 6px;
+  }
+</style>
+</head>
+<body>
+
+<h1>DevOps Intelligence Platform</h1>
+<p class="subtitle">Adobe Cloud Manager · Data Flow · Code Push → Risk Prediction</p>
+
+<div class="flow">
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 1: CODE PUSH                             -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Trigger</div>
+    <div class="node c-git">
+      <div class="node-title">Developer pushes code to Cloud Manager Git</div>
+      <div class="node-desc">
+        <code style="color:#7dd3fc">git.cloudmanager.adobe.com/{org}/{repo}</code><br/>
+        Commit SHA generated · Author · Commit message · Changed files list
+      </div>
+      <span class="node-tag">git push</span>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">pipeline triggered</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 2: CM RUNS PIPELINE                      -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Execution</div>
+    <div class="node c-azure">
+      <div class="node-title">Adobe Cloud Manager runs the pipeline</div>
+      <div class="node-desc">
+        Stages: <strong>build → codeQuality → securityTest → deploy → loadTest</strong><br/>
+        Logs written to Azure File Share per execution · shareName assigned
+      </div>
+      <span class="node-tag">AEM Cloud Manager</span>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">events emitted</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 3: SPLUNK COLLECTS                       -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Collection</div>
+    <div class="node-row">
+      <div class="node c-splunk">
+        <div class="node-title">Splunk captures execution events</div>
+        <div class="node-desc">
+          · executionId, pipelineId, programId<br/>
+          · Status: RUNNING / FINISHED / FAILED<br/>
+          · firstFailedStep<br/>
+          · Deploy start time &amp; end time<br/>
+          · shareName → Azure file share path
+        </div>
+        <span class="node-tag">index=ams_linux-os</span>
+      </div>
+      <div class="node c-git">
+        <div class="node-title">Local git clone kept in sync</div>
+        <div class="node-desc">
+          · <code>git fetch</code> every 10 min (TTL)<br/>
+          · Full commit history available<br/>
+          · No SHA comes from Splunk — correlated by timestamp<br/>
+          · <code>correlate_executions_to_commits()</code>
+        </div>
+        <span class="node-tag">GIT_LOCAL_DIR</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">user selects a FINISHED execution</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 4: AGENT FETCHES DIFF                    -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Git Diff</div>
+    <div class="node c-git">
+      <div class="node-title">get_commit_diff(sha) — what changed?</div>
+      <div class="node-desc">
+        <code>git log -1</code> → title, author, body<br/>
+        <code>git diff &lt;parent&gt; &lt;sha&gt;</code> → full raw patch (capped 500 KB)<br/>
+        <code>git diff --name-only</code> → changed file list<br/>
+        Detects merge commits → diffs against first parent (not empty)
+      </div>
+      <span class="node-tag">git_connector.py</span>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">raw diff → structured signals</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 5: DIFF ANALYSIS                         -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Parse</div>
+    <div class="node c-struct">
+      <div class="node-title">analyze_diff() — extract structured signals</div>
+      <div class="node-desc">
+        Parses every changed file by type:<br/>
+        <strong>pom.xml</strong> → Maven deps added/removed, SNAPSHOT versions<br/>
+        <strong>.java</strong> → @Component, @Reference, @Service, interface method removals<br/>
+        <strong>filter.xml</strong> → Vault JCR root paths<br/>
+        <strong>package.json</strong> → npm packages added/removed<br/>
+        <strong>title</strong> → subtree import pattern detected
+      </div>
+      <span class="node-tag">diff_analyzer.py</span>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">signals → deterministic checks</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 6: STRUCTURAL CHECKS                     -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Rules</div>
+    <div class="node c-struct">
+      <div class="node-title">predict_build_failures() — 6 deterministic checks</div>
+      <div class="node-desc">
+        <strong>① Subtree import?</strong> → Low risk immediately (88% conf), skip LLM<br/>
+        <strong>② SNAPSHOT dep?</strong> → HIGH (85% conf)<br/>
+        <strong>③ @Reference → no @Service impl?</strong> → git grep repo → HIGH (78%)<br/>
+        <strong>④ Interface method removed?</strong> → git grep callers → HIGH (82%)<br/>
+        <strong>⑤ Vault filter duplicate root?</strong> → HIGH (80%)<br/>
+        <strong>⑥ npm wildcard version?</strong> → MEDIUM (70%)
+      </div>
+      <span class="node-tag">build_predictor.py</span>
+    </div>
+  </div>
+
+  <!-- arrow with branch -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">override_llm true or false?</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 7: DECISION                              -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Decision</div>
+    <div class="node-row">
+      <div class="node c-struct" style="border-style:dashed">
+        <div class="node-title" style="color:#fcd34d">override_llm = True</div>
+        <div class="node-desc">
+          HIGH confidence deterministic finding<br/>
+          (subtree import, SNAPSHOT dep, OSGi unresolved)<br/>
+          → Skip LLM for build analysis<br/>
+          → Still runs environment check
+        </div>
+        <span class="node-tag">skip LLM</span>
+      </div>
+      <div class="node c-llm" style="border-style:dashed">
+        <div class="node-title">override_llm = False</div>
+        <div class="node-desc">
+          No certain deterministic finding<br/>
+          Structural findings passed as context<br/>
+          → LLM called with full context bundle<br/>
+          → Returns risk level + step risks
+        </div>
+        <span class="node-tag">call LLM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">always runs regardless of path above</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 8: ENV CHECK                             -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Env Check</div>
+    <div class="node-row">
+      <div class="node c-splunk">
+        <div class="node-title">assess_environment_readiness()</div>
+        <div class="node-desc">
+          Uses Splunk history (pipeline_df + failed_df)<br/>
+          · Consecutive securityTest failures<br/>
+          · Days since last successful securityTest<br/>
+          · Dominant failing step<br/>
+          → status: NOT_READY / CAUTION / READY
+        </div>
+        <span class="node-tag">env_readiness.py</span>
+      </div>
+      <div class="node c-agent">
+        <div class="node-title">LLM context bundle (if called)</div>
+        <div class="node-desc">
+          · Diff excerpt (500KB cap)<br/>
+          · Structural findings injected<br/>
+          · 30-day pipeline failure history<br/>
+          · AEM modules touched<br/>
+          · prompts/pre_deploy_risk.md rules
+        </div>
+        <span class="node-tag">devops_agent.py</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">merged into final report</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 9: RISK REPORT                           -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Output</div>
+    <div class="node c-out">
+      <div class="node-title">RiskReport generated</div>
+      <div class="node-desc">
+        · <strong>risk_level:</strong> Low / Medium / High / Critical<br/>
+        · <strong>confidence_score:</strong> 0–100%<br/>
+        · <strong>most_likely_failure_step:</strong> build / securityTest / deploy<br/>
+        · <strong>step_risks[]:</strong> per-step level + rationale<br/>
+        · <strong>recommended_actions[]</strong><br/>
+        · <strong>narrative</strong> (LLM explanation or structural reasoning)
+      </div>
+      <span class="node-tag">models/risk_report.py</span>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">stored immediately</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 10: PREDICTION STORE                     -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Prediction</div>
+    <div class="node c-pred">
+      <div class="node-title">save_prediction() → data/predictions.jsonl</div>
+      <div class="node-desc">
+        Written immediately as <strong>PENDING</strong><br/>
+        Fields: commit_sha, predicted_risk, predicted_step, confidence, execution_id<br/>
+        <br/>
+        <strong>Later:</strong> when Splunk shows execution completed →<br/>
+        <code>enrich_from_splunk()</code> resolves to <strong>RESOLVED</strong><br/>
+        Labels: correct=True/False, actual_status, actual_failed_step
+      </div>
+      <span class="node-tag">prediction_store.py</span>
+      <div class="store-badge">
+        <svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="none" stroke="#4ade80" stroke-width="1.5"/></svg>
+        PENDING → RESOLVED · ground truth for future ML training
+      </div>
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow">
+    <div class="arrow-spacer"></div>
+    <div class="arrow-line">
+      <svg width="2" height="24"><line x1="1" y1="0" x2="1" y2="24" stroke="#334155" stroke-width="2"/></svg>
+      <svg width="12" height="8"><polygon points="6,8 0,0 12,0" fill="#334155"/></svg>
+      <div class="arrow-label">accuracy_stats() on resolved records</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ -->
+  <!-- STEP 11: FEEDBACK LOOP                        -->
+  <!-- ══════════════════════════════════════════════ -->
+  <div class="phase-row">
+    <div class="phase-label">Feedback</div>
+    <div class="node-row">
+      <div class="node c-pred">
+        <div class="node-title">Accuracy metrics</div>
+        <div class="node-desc">
+          · accuracy_pct<br/>
+          · false_positive_rate (predicted High, passed)<br/>
+          · false_negative_rate (predicted Low, failed)<br/>
+          · step_accuracy_pct
+        </div>
+        <span class="node-tag">Phase 1 — live</span>
+      </div>
+      <div class="node c-agent" style="opacity:0.55; border-style:dashed">
+        <div class="node-title">Future: LightGBM model</div>
+        <div class="node-desc">
+          Train on resolved predictions<br/>
+          Feature matrix: changed_files_count,<br/>
+          has_pom, author_fail_rate,<br/>
+          pipeline_30d_fail_rate, log_error_count<br/>
+          → replace LLM confidence score
+        </div>
+        <span class="node-tag">Phase 4 — planned</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Legend ── -->
+<div style="max-width:900px;margin:48px auto 0;display:flex;flex-wrap:wrap;gap:10px;justify-content:center">
+  <div style="font-size:0.65rem;color:#334155;width:100%;text-align:center;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.08em">Legend</div>
+  <span style="background:#1a2035;border:1px solid #3b4f7a;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#7dd3fc">Git / Code</span>
+  <span style="background:#1f1a2e;border:1px solid #6b4fa0;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#c4b5fd">Splunk</span>
+  <span style="background:#1a2535;border:1px solid #2d6a8f;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#67e8f9">Azure / CM</span>
+  <span style="background:#2a1f10;border:1px solid #8a5a10;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#fcd34d">Structural Rules</span>
+  <span style="background:#2a1020;border:1px solid #8a3060;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#f9a8d4">LLM (Claude)</span>
+  <span style="background:#1a2a1a;border:1px solid #2a7a2a;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#4ade80">Prediction Store</span>
+  <span style="background:#2a1a10;border:1px solid #8a4a10;border-radius:5px;padding:3px 10px;font-size:0.68rem;color:#fb923c">Output / Report</span>
+</div>
+
+</body>
+</html>

@@ -30,8 +30,10 @@ def _repo_url() -> str:
     return url
 
 
-def _local_dir() -> str:
-    return os.getenv("GIT_LOCAL_DIR", os.path.expanduser("~/idfc-repo"))
+def _local_dir(override: Optional[str] = None) -> str:
+    if override:
+        return override
+    return os.getenv("GIT_LOCAL_DIR", "")
 
 
 def _auth_url() -> str:
@@ -49,12 +51,12 @@ def _auth_url() -> str:
 
 # ── Core git helper ──────────────────────────────────────────
 
-def _git(*args: str, cwd: Optional[str] = None) -> str:
+def _git(*args: str, cwd: Optional[str] = None, repo_dir: Optional[str] = None) -> str:
     """Run a git command and return stdout. Raises on non-zero exit."""
     cmd = ["git"] + list(args)
     result = subprocess.run(
         cmd,
-        cwd=cwd or _local_dir(),
+        cwd=cwd or _local_dir(repo_dir),
         capture_output=True,
         text=True,
         timeout=120,
@@ -142,10 +144,6 @@ def clone_or_update() -> str:
                 f"Hint: set CM_GIT_REPO_URL and optionally CM_GIT_USERNAME / CM_GIT_PASSWORD in .env"
             )
         print("  [git] Clone complete.")
-        subprocess.run(
-            ["git", "remote", "set-url", "origin", _repo_url()],
-            cwd=str(repo_dir), capture_output=True, text=True,
-        )
         _write_sync_state(repo_dir, synced=True)
         return str(repo_dir)
 
@@ -165,12 +163,9 @@ def clone_or_update() -> str:
         # Disable any interactive credential prompt — prevents hanging in subprocesses
         _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
 
-        # Keep the persisted origin URL credential-free. Fetch with the
-        # credentialed URL only for this process invocation.
-        subprocess.run(
-            ["git", "remote", "set-url", "origin", _repo_url()],
-            cwd=str(repo_dir), capture_output=True, text=True,
-        )
+        # Do NOT reset the remote URL — the local clone may be a different customer's
+        # repo (e.g. HDFC) while CM_GIT_REPO_URL points to IDFC.
+        # The remote URL is set once at clone time and managed by the customer registry.
 
         fetch_result = subprocess.run(
             ["git", "fetch", "--prune", auth_url, "+refs/heads/*:refs/remotes/origin/*"],
@@ -248,13 +243,78 @@ def get_sync_status() -> dict:
 
 # ── Public API — same shape as github_connector.py ───────────
 
+def _sha_exists(sha: str, repo_dir: Optional[str] = None) -> bool:
+    """Check if a SHA object exists in the local repo."""
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "-t", sha],
+            cwd=_local_dir(repo_dir), capture_output=True, text=True, timeout=10,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _fetch_all(repo_dir: Optional[str] = None) -> None:
+    """Fetch all remote branches. Injects credentials from env if available."""
+    _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+    cwd = _local_dir(repo_dir)
+
+    # Build credentialed fetch URL if username+password are available
+    username = os.getenv("CM_GIT_USERNAME", "")
+    password = os.getenv("CM_GIT_PASSWORD", "")
+    fetch_cmd = ["git", "fetch", "--all", "--prune"]
+
+    if username and password:
+        # Get current remote URL and inject credentials
+        try:
+            r = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=cwd, capture_output=True, text=True, timeout=5,
+            )
+            remote_url = r.stdout.strip()
+            if remote_url and "://" in remote_url:
+                from urllib.parse import quote as _q
+                proto, rest = remote_url.split("://", 1)
+                # Strip any existing credentials
+                if "@" in rest:
+                    rest = rest.split("@", 1)[1]
+                auth_url = f"{proto}://{_q(username, safe='')}:{_q(password, safe='')}@{rest}"
+                fetch_cmd = ["git", "fetch", "--prune", auth_url, "+refs/heads/*:refs/remotes/origin/*"]
+        except Exception:
+            pass
+
+    result = subprocess.run(
+        fetch_cmd, cwd=cwd, capture_output=True, text=True, timeout=120, env=_env,
+    )
+    if result.returncode != 0:
+        print(f"  [git] fetch failed: {result.stderr[:300]}")
+
+
 def get_commit_diff(repo: Optional[str], sha: str) -> Dict[str, Any]:
-    """Get metadata + changed files + diff for a single commit SHA."""
+    """Get metadata + changed files + diff for a single commit SHA.
+    repo: explicit path to local git clone — overrides GIT_LOCAL_DIR env var.
+    """
+    # Use explicit repo path if provided, otherwise fall back to env var
+    repo_dir = repo or None
+
     clone_or_update()
 
-    title  = _git("log", "-1", "--format=%s",  sha).strip()
-    body   = _git("log", "-1", "--format=%b",  sha).strip()
-    author = _git("log", "-1", "--format=%an", sha).strip()
+    # If SHA not found locally, do a full fetch (picks up all remote branches)
+    if not _sha_exists(sha, repo_dir):
+        print(f"  [git] SHA {sha[:12]} not found locally — fetching all branches...")
+        _fetch_all(repo_dir)
+        if not _sha_exists(sha, repo_dir):
+            raise RuntimeError(
+                f"SHA {sha} not found in local repo at {_local_dir(repo_dir)}. "
+                f"Ensure the correct repository is cloned and the branch containing "
+                f"this commit has been pushed to the remote."
+            )
+
+    title  = _git("log", "-1", "--format=%s",  sha, repo_dir=repo_dir).strip()
+    body   = _git("log", "-1", "--format=%b",  sha, repo_dir=repo_dir).strip()
+    author = _git("log", "-1", "--format=%an", sha, repo_dir=repo_dir).strip()
 
     changed_files = _changed_files_for_commit(sha)
     diff_out = _diff_for_commit(sha)

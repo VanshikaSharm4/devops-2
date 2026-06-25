@@ -79,17 +79,28 @@ def assess_environment_readiness(
             last_success_ago = f"{hours} hour{'s' if hours != 1 else ''} ago"
 
     # ── Dominant failing step in recent window ────────────────────────────
+    # failed_df only has executionId + firstFailedStep — no timestamps.
+    # Join with pipeline_df to get timestamps for proper time-ordering.
     dominant_step = ""
     is_env_issue  = False
     if failed_df is not None and not failed_df.empty and "firstFailedStep" in failed_df.columns:
         try:
-            recent_failed = failed_df.copy()
-            recent_failed["_ts"] = pd.to_datetime(
-                recent_failed["Deploy Start Time"].str.replace(r"\s*(PDT|PST|UTC|GMT)$", "", regex=True),
-                utc=True, errors="coerce"
-            )
-            recent_failed = recent_failed.dropna(subset=["_ts"]).sort_values("_ts", ascending=False)
-            recent_window = recent_failed.head(recent_n)
+            # Merge with pipeline_df to get timestamps
+            merged = failed_df[["executionId", "firstFailedStep"]].copy()
+            merged["executionId"] = merged["executionId"].astype(str)
+
+            pipe_ts = df[["executionId", "_ts"]].copy()
+            pipe_ts["executionId"] = pipe_ts["executionId"].astype(str)
+
+            merged = merged.merge(pipe_ts, on="executionId", how="left")
+            merged = merged.dropna(subset=["firstFailedStep"])
+            merged = merged[merged["firstFailedStep"].str.strip() != ""]
+
+            # Sort by timestamp if available, else use raw order
+            if "_ts" in merged.columns and merged["_ts"].notna().any():
+                merged = merged.sort_values("_ts", ascending=False)
+
+            recent_window = merged.head(recent_n)
             if not recent_window.empty:
                 step_counts = recent_window["firstFailedStep"].value_counts()
                 dominant_step = step_counts.index[0] if not step_counts.empty else ""
@@ -101,8 +112,13 @@ def assess_environment_readiness(
 
     # ── Determine status ──────────────────────────────────────────────────
     if consecutive == 0:
-        status = "READY"
-    elif consecutive < 3:
+        # Even with no consecutive failures, if securityTest dominates recent history
+        # it's a persistent env issue (CRXDE/DavEx active) — flag as CAUTION
+        if dominant_step in ENV_STEPS and is_env_issue:
+            status = "CAUTION"
+        else:
+            status = "READY"
+    elif consecutive < 2:
         status = "CAUTION"
     elif is_env_issue:
         status = "NOT_READY"

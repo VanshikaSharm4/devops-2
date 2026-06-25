@@ -28,6 +28,8 @@ _CUSTOMERS = {
         "tenant_id":     "idfc",
         "short":         "IDFC",
         "git_local_dir": os.getenv("IDFC_GIT_LOCAL_DIR", ""),
+        "git_username":  os.getenv("IDFC_CM_GIT_USERNAME", ""),
+        "git_password":  os.getenv("IDFC_CM_GIT_PASSWORD", ""),
     },
     "HDFC Bank": {
         "program_id":    os.getenv("PROGRAM_ID_HDFC",    "16360"),
@@ -37,6 +39,8 @@ _CUSTOMERS = {
         "tenant_id":     "hdfc",
         "short":         "HDFC",
         "git_local_dir": os.getenv("HDFC_GIT_LOCAL_DIR", ""),
+        "git_username":  os.getenv("HDFC_CM_GIT_USERNAME", ""),
+        "git_password":  os.getenv("HDFC_CM_GIT_PASSWORD", ""),
     },
     "Malaysia Airlines": {
         "program_id":    os.getenv("PROGRAM_ID_MALAYSIA", "465"),
@@ -46,6 +50,8 @@ _CUSTOMERS = {
         "tenant_id":     "malaysia",
         "short":         "MAS",
         "git_local_dir": os.getenv("MALASIA_GIT_LOCAL_DIR", ""),
+        "git_username":  os.getenv("MALASIA_CM_GIT_USERNAME", ""),
+        "git_password":  os.getenv("MALASIA_CM_GIT_PASSWORD", ""),
     },
     "Bajaj": {
         "program_id":    None,
@@ -75,6 +81,10 @@ if _active_customer.get("pipeline_dev"):
     os.environ["PIPELINE_ID_DEV"]  = _active_customer["pipeline_dev"]
 if _active_customer.get("git_local_dir"):
     os.environ["GIT_LOCAL_DIR"]    = _active_customer["git_local_dir"]
+if _active_customer.get("git_username"):
+    os.environ["CM_GIT_USERNAME"]  = _active_customer["git_username"]
+if _active_customer.get("git_password"):
+    os.environ["CM_GIT_PASSWORD"]  = _active_customer["git_password"]
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 T = {
@@ -2235,6 +2245,10 @@ elif page == "Risk Assessment":
             if "risk_report" not in st.session_state:
                 with st.spinner(f"Assessing Production risk for {_auto_sha[:8]}..."):
                         try:
+                            # Force correct repo dir for this customer before any git calls
+                            _cust_git_dir = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
+                            if _cust_git_dir:
+                                os.environ["GIT_LOCAL_DIR"] = _cust_git_dir
                             from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
                             from analysis.ingest import build_base_bundle
                             if "risk_base_bundle" not in st.session_state:
@@ -2242,12 +2256,15 @@ elif page == "Risk Assessment":
                                 st.session_state["risk_base_bundle"] = _base_bundle
                             else:
                                 _base_bundle = st.session_state["risk_base_bundle"]
+                            # Inject customer-specific git dir
+                            _base_bundle.__dict__["git_local_dir"] = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
                             _, report, md = run_pre_deploy_risk(
                                 commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
                                 bundle=_base_bundle,
                             )
                             save_risk_report(report, md, commit_sha=_auto_sha)
-                            st.session_state["risk_report"] = report.model_dump(mode="json")
+                            _r = report.model_dump(mode="json")
+                            st.session_state["risk_report"] = _r
                             # Save prediction as PENDING — will be resolved when actual outcome arrives
                             try:
                                 from analysis.prediction_store import save_prediction
@@ -2285,6 +2302,23 @@ elif page == "Risk Assessment":
         )
         with st.spinner(f"Analysing commit {_auto_sha[:8]}..."):
             try:
+                # Force correct repo dir for this customer before any git calls
+                _git_dir = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
+                if _git_dir:
+                    os.environ["GIT_LOCAL_DIR"] = _git_dir
+                # Verify the SHA exists in the local repo and has actual file changes
+                from connectors.git_connector import get_commit_diff as _gcd
+                _pre_diff = _gcd(_git_dir, _auto_sha)
+                if not _pre_diff.get("changed_files"):
+                    st.error(
+                        f"**Cannot assess SHA `{_auto_sha[:12]}...`** — "
+                        f"no files found in the local git clone for this commit.\n\n"
+                        f"This usually means the repository for **{st.session_state.get('selected_customer', '')}** "
+                        f"is not cloned at `{_git_dir}` or this SHA does not exist in that repo.\n\n"
+                        f"Check that `{_active_customer.get('short', '')}_GIT_LOCAL_DIR` "
+                        f"is set correctly in `.env`."
+                    )
+                    st.stop()
                 from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
                 from analysis.ingest import build_base_bundle
                 if "risk_base_bundle" not in st.session_state:
@@ -2292,6 +2326,8 @@ elif page == "Risk Assessment":
                     st.session_state["risk_base_bundle"] = _base_bundle
                 else:
                     _base_bundle = st.session_state["risk_base_bundle"]
+                # Inject customer-specific git dir so risk_analyzer uses the right repo
+                _base_bundle.__dict__["git_local_dir"] = _git_dir
                 _, report, md = run_pre_deploy_risk(
                     commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
                     bundle=_base_bundle,
@@ -2410,6 +2446,18 @@ elif page == "Risk Assessment":
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+        # ── Infrastructure disclaimer ─────────────────────────────────────────
+        st.markdown(
+            f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
+            f'border-radius:6px;padding:8px 14px;margin-bottom:10px">'
+            f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0">'
+            f'⚠ This assessment analyses <strong>code-caused risks only</strong>. '
+            f'Infrastructure failures (JDK/toolchain misconfiguration, cloud scaling issues, '
+            f'environment resource limits) cannot be predicted from a git diff and are not reflected here.'
+            f'</p></div>',
+            unsafe_allow_html=True,
+        )
 
         # ── Section 1: Release Risk Overview strip ────────────────────────────
         risk_level = r.get("risk_level", "Unknown")

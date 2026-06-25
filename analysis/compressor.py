@@ -208,12 +208,22 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
         "known_root_causes": (failure_history.get("known_root_causes") or [])[:5],
     }
 
+    # ── Environment state — always include, highest priority signal ──────────────
+    env_readiness = bundle_dict.get("environment_readiness") or {}
+
     return {
-        "commit_profile": commit_profile_dict,
-        "historical_baseline": historical_baseline,
-        "high_signal_failures": high_signal_slim,   # max 5, weight >= 0.5
-        "infra_noise_failures": infra_noise_slim,    # max 3, labelled as low-signal
-        "rule_scores": bundle_dict.get("rule_scores", {}),  # verbatim — ground truth
+        # SIGNAL PRIORITY ORDER — LLM should weight these top-down:
+        # 1. Environment state (persistent infra issues — CRXDE/DavEx/scaling)
+        # 2. Historical failure patterns from Splunk
+        # 3. ChromaDB similar incidents (added later)
+        # 4. Structural code analysis (advisory, not override)
+        "environment_readiness": env_readiness,          # #1 — env state drives securityTest risk
+        "historical_baseline": historical_baseline,      # #2 — Splunk failure history per step
+        "high_signal_failures": high_signal_slim,        # #2b — classified error signals
+        "infra_noise_failures": infra_noise_slim,        # noise — label as infra, not code risk
+        "commit_profile": commit_profile_dict,           # #4 — structural (advisory)
+        "structural_findings": bundle_dict.get("structural_findings") or [],  # deterministic checks
+        "rule_scores": bundle_dict.get("rule_scores", {}),
         "diff_excerpt": diff[:2500] + ("..." if len(diff) > 2500 else ""),
         "inferred_failure_modes": inferred_failure_modes,
         "change_intent": inferred_change_intent,

@@ -151,7 +151,7 @@ def resolve_prediction(
                 r["correct"] = predicted_risk == "low"
                 r["evaluation_note"] = (
                     f"Pipeline FINISHED. "
-                    f"{'Correct — predicted Low.' if r['correct'] else f'Incorrect — predicted {r[predicted_risk]} but no failure.'}"
+                    f"{'Correct — predicted Low.' if r['correct'] else f'Incorrect — predicted {predicted_risk} but no failure.'}"
                 )
             else:
                 # Pipeline failed — check if we got the step right
@@ -181,13 +181,78 @@ def resolve_prediction(
 
 # ── Auto-enrich from Splunk data ──────────────────────────────────────────────
 
+def backfill_execution_ids(pipeline_df) -> int:
+    """
+    For PENDING predictions that have a commit_sha but no execution_id,
+    try to link them to an execution by correlating SHA against pipeline history.
+
+    Uses the same timestamp-correlation approach as git_connector:
+    find the execution whose start time is closest AFTER the commit timestamp.
+
+    Returns number of predictions updated with an execution_id.
+    """
+    import pandas as pd
+
+    pending_no_eid = [p for p in load_pending() if not p.get("execution_id")]
+    if not pending_no_eid or pipeline_df is None or pipeline_df.empty:
+        return 0
+
+    # Build SHA → execution mapping from Splunk + git correlation
+    try:
+        from connectors.git_connector import correlate_executions_to_commits
+        rows = pipeline_df.to_dict("records")
+        sha_map = correlate_executions_to_commits(rows)
+        # sha_map: {executionId: {sha, sha_short, title, author}}
+        # Reverse: sha → executionId
+        sha_to_eid: Dict[str, str] = {
+            v["sha"]: k for k, v in sha_map.items() if v.get("sha")
+        }
+    except Exception:
+        return 0
+
+    if not sha_to_eid:
+        return 0
+
+    # Load all records, update matching ones
+    records = load_all()
+    updated = 0
+    pred_index = {r["id"]: i for i, r in enumerate(records)}
+
+    for pred in pending_no_eid:
+        sha = pred.get("commit_sha", "")
+        if not sha:
+            continue
+        eid = sha_to_eid.get(sha)
+        if not eid:
+            # Try short SHA match
+            eid = next((e for e, v in sha_map.items() if v.get("sha", "").startswith(sha[:12])), None)
+        if not eid:
+            continue
+
+        idx = pred_index.get(pred["id"])
+        if idx is not None:
+            records[idx]["execution_id"] = eid
+            updated += 1
+
+    if updated:
+        with open(STORE_PATH, "w", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+    return updated
+
+
 def enrich_from_splunk(pipeline_df, failed_df) -> int:
     """
     Called after every Splunk data load.
-    Scans PENDING predictions and resolves any whose execution has completed.
-    Returns number of predictions resolved.
+    1. First backfills missing execution_ids via SHA correlation
+    2. Then resolves PENDING predictions whose execution has completed
+    Returns total number of predictions resolved.
     """
     import pandas as pd
+
+    # Step 1: backfill execution_ids for predictions that are missing them
+    backfill_execution_ids(pipeline_df)
 
     pending = load_pending()
     if not pending:
@@ -212,20 +277,93 @@ def enrich_from_splunk(pipeline_df, failed_df) -> int:
                 exec_step[eid] = step
 
     resolved_count = 0
-    for pred in pending:
+    for pred in load_pending():  # reload after backfill
         eid = pred.get("execution_id", "")
         if not eid or eid not in exec_status:
             continue
 
-        status     = exec_status[eid]
+        status      = exec_status[eid]
         failed_step = exec_step.get(eid, "")
 
-        # Only resolve completed executions
         if status in ("FINISHED", "FAILED", "ERROR"):
             resolve_prediction(pred["id"], status, failed_step)
             resolved_count += 1
 
     return resolved_count
+
+
+# ── Bulk resolve from manual test Excel ──────────────────────────────────────
+
+def resolve_from_excel(excel_path: str) -> Dict[str, int]:
+    """
+    Bulk-resolve PENDING predictions using manually recorded test results.
+
+    Excel must have columns: sha (or 'Git SHA'), actual result (or 'Actual Outcome'),
+    and optionally 'Actual Failed Step'.
+
+    Matches predictions by commit_sha prefix (first 12 chars).
+    Returns {"resolved": N, "not_found": N, "already_resolved": N}
+    """
+    try:
+        import pandas as pd
+        df = pd.read_excel(excel_path)
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Normalize column names
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    # Find SHA column
+    sha_col = next((c for c in df.columns if "sha" in c), None)
+    # Find result column
+    result_col = next((c for c in df.columns if "actual" in c and "result" in c), None) or \
+                 next((c for c in df.columns if "actual" in c), None)
+    # Find failed step column
+    step_col = next((c for c in df.columns if "step" in c and "actual" in c), None) or \
+               next((c for c in df.columns if "failed_step" in c), None)
+
+    if not sha_col or not result_col:
+        return {"error": f"Could not find SHA or result columns. Found: {list(df.columns)}"}
+
+    pending = {p["commit_sha"]: p for p in load_pending()}
+
+    resolved = not_found = already_resolved = 0
+
+    for _, row in df.iterrows():
+        raw_sha = str(row.get(sha_col, "") or "").strip()
+        if not raw_sha or raw_sha == "nan":
+            continue
+
+        raw_result = str(row.get(result_col, "") or "").strip().upper()
+        if not raw_result or raw_result == "NAN":
+            continue
+
+        # Normalize result
+        if raw_result in ("PASSED", "FINISHED", "SUCCESS", "PASS"):
+            actual_status = "FINISHED"
+            actual_step   = ""
+        elif raw_result in ("FAILED", "FAIL", "FAILURE"):
+            actual_status = "FAILED"
+            actual_step   = str(row.get(step_col, "") or "").strip() if step_col else ""
+        elif raw_result in ("ERROR", "ERR"):
+            actual_status = "ERROR"
+            actual_step   = str(row.get(step_col, "") or "").strip() if step_col else ""
+        else:
+            continue  # unknown result, skip
+
+        # Match by full SHA or prefix
+        pred = pending.get(raw_sha)
+        if not pred:
+            pred = next((p for sha, p in pending.items() if sha.startswith(raw_sha[:12]) or raw_sha.startswith(sha[:12])), None)
+
+        if not pred:
+            not_found += 1
+            continue
+
+        resolve_prediction(pred["id"], actual_status, actual_step)
+        resolved += 1
+
+    return {"resolved": resolved, "not_found": not_found, "already_resolved": already_resolved}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

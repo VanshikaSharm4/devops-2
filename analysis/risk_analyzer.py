@@ -139,7 +139,7 @@ def run_pre_deploy_risk(
         import os as _os
         git_ctx = bundle.git_context
         if git_ctx:
-            repo_dir = _os.getenv("GIT_LOCAL_DIR", "")
+            repo_dir = bundle.__dict__.get("git_local_dir") or _os.getenv("GIT_LOCAL_DIR", "")
             structural = predict_build_failures(
                 diff_text     = git_ctx.diff_excerpt or "",
                 changed_files = git_ctx.changed_files or [],
@@ -154,31 +154,130 @@ def run_pre_deploy_risk(
                      "confidence": f.confidence, "title": f.title, "detail": f.detail}
                     for f in structural.findings
                 ]
-                # If override — skip LLM entirely for build prediction
+                # If override — skip LLM for build, but ALWAYS check environment for securityTest
                 if structural.override_llm:
                     from models.risk_report import RiskReport, StepRisk
+
+                    # Check environment state — securityTest risk is independent of code
+                    sec_level    = "Low"
+                    sec_rationale = "No environment signals detected."
+                    env_actions: list = []
+                    final_risk = structural.predicted_risk
+                    final_step = structural.predicted_step
+
+                    try:
+                        from analysis.env_readiness import assess_environment_readiness
+                        env = assess_environment_readiness(
+                            bundle.execution_summary.__class__.__name__ and None or None,
+                            None
+                        )
+                    except Exception:
+                        env = None
+
+                    # Also check pipeline_df/failed_df from bundle context
+                    try:
+                        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS
+                        from analysis.ingest import load_data
+                        _pdf, _fdf, _, _ = load_data()
+                        env = assess_environment_readiness(_pdf, _fdf)
+                        if env and env["status"] in ("NOT_READY", "CAUTION"):
+                            _dom = env.get("dominant_step", "")
+                            if _dom in ENV_STEPS:
+                                sec_level = "High" if env["status"] == "NOT_READY" else "Medium"
+                                sec_rationale = env["recommendation"]
+                                env_actions = [
+                                    f"Environment issue detected: {env['recommendation']}",
+                                    f"Dominant failing step: {_dom} ({env['consecutive_failures']} consecutive failures)",
+                                    f"Last success: {env['last_success_ago']}",
+                                ]
+                                # Escalate overall risk if environment is bad
+                                if sec_level == "High":
+                                    final_risk = "High"
+                                    final_step = _dom
+                                elif final_risk == "Low":
+                                    final_risk = "Medium"
+                                    final_step = _dom
+                    except Exception:
+                        pass
+
+                    all_actions = [f.title for f in structural.findings[:3]] + env_actions
+                    step_risks = [
+                        StepRisk(step="build", level=structural.predicted_risk,
+                                 historical_failure_count=0, rationale=structural.summary),
+                        StepRisk(step="securityTest", level=sec_level,
+                                 historical_failure_count=0, rationale=sec_rationale),
+                    ]
+
                     report = RiskReport(
-                        risk_level=structural.predicted_risk,
+                        risk_level=final_risk,
                         confidence_score=structural.confidence,
                         commit_sha=commit_sha or "",
-                        most_likely_failure_step=structural.predicted_step,
+                        most_likely_failure_step=final_step,
                         modules_at_risk=git_ctx.aem_modules_touched or [],
-                        step_risks=[
-                            StepRisk(step="build", level=structural.predicted_risk,
-                                     historical_failure_count=0, rationale=structural.summary),
-                        ],
-                        recommended_actions=[f.title for f in structural.findings[:4]],
-                        narrative=structural.summary,
+                        step_risks=step_risks,
+                        recommended_actions=all_actions[:5],
+                        narrative=(
+                            f"{structural.summary} "
+                            + (f"Additionally: {sec_rationale}" if sec_level != "Low" else "")
+                        ),
                         reasoning=_build_structural_reasoning(structural),
                     )
                     return bundle, report, _structural_markdown(bundle, report, structural)
     except Exception:
         pass  # structural analysis is additive — never block LLM path
 
+    # ── Always run environment check — inject into bundle before LLM ──────────
+    # This ensures the LLM always sees environment state regardless of code analysis
+    try:
+        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS
+        from analysis.ingest import load_data
+        _pdf, _fdf, _, _ = load_data()
+        _env = assess_environment_readiness(_pdf, _fdf)
+        if _env:
+            bundle.__dict__["environment_readiness"] = {
+                "status":               _env["status"],
+                "consecutive_failures": _env["consecutive_failures"],
+                "dominant_step":        _env["dominant_step"],
+                "is_env_issue":         _env["is_env_issue"],
+                "last_success_ago":     _env["last_success_ago"],
+                "recommendation":       _env["recommendation"],
+            }
+    except Exception:
+        pass
+
     from agent.devops_agent import run_risk_analysis
 
     bundle_dict = bundle.model_dump(mode="json")
+    # Carry env_readiness and structural_findings into bundle_dict (not in Pydantic model)
+    if "environment_readiness" in bundle.__dict__:
+        bundle_dict["environment_readiness"] = bundle.__dict__["environment_readiness"]
+    if "structural_findings" in bundle.__dict__:
+        bundle_dict["structural_findings"] = bundle.__dict__["structural_findings"]
+
     report = run_risk_analysis(bundle_dict)
+
+    # ── Post-processing: enforce most_likely_failure_step = highest risk step ──
+    # The LLM sometimes names a code-caused step (e.g. deploy) as most likely even
+    # when an env step (e.g. securityTest) has a higher risk level. Override here.
+    try:
+        if report and report.step_risks:
+            _level_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+            _top_step = max(
+                report.step_risks,
+                key=lambda s: (
+                    _level_order.get(s.level, 0),
+                    s.historical_failure_count or 0,
+                )
+            )
+            _current_level = next(
+                (_level_order.get(s.level, 0) for s in report.step_risks
+                 if s.step == report.most_likely_failure_step),
+                0
+            )
+            if _level_order.get(_top_step.level, 0) > _current_level:
+                report.most_likely_failure_step = _top_step.step
+    except Exception:
+        pass
     md = _report_to_markdown(bundle, report)
     return bundle, report, md
 
