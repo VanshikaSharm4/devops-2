@@ -83,20 +83,66 @@ def find_filter_xml_conflicts(repo_dir: str, changed_root: str) -> List[str]:
 
 def check_osgi_service_exists(repo_dir: str, service_interface: str) -> bool:
     """
-    Check if a referenced OSGi service interface has an implementation in the repo.
-    Returns True if at least one @Service implementing it exists.
+    Check if a referenced OSGi service interface has an implementation.
+
+    Searches the main repo AND all cloned submodule repos from repo_config.json.
+    For HDFC-style multi-submodule codebases, the @Service implementation is
+    often in a different submodule than where the @Reference is defined.
+
+    Returns True if at least one @Service implementing it exists anywhere.
+    Returns True (assume exists) if no repo is available — avoids false positives.
     """
-    if not repo_dir or not Path(repo_dir).exists():
-        return True  # assume exists if we can't check
+    def _grep_repo(rdir: str) -> bool:
+        if not rdir or not Path(rdir).exists():
+            return False
+        try:
+            result = subprocess.run(
+                ["git", "grep", "-l", "--", f"implements.*{service_interface}"],
+                cwd=rdir, capture_output=True, text=True, timeout=10,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            return bool(result.stdout.strip())
+        except Exception:
+            return False
+
+    # Search main repo first
+    if not repo_dir:
+        return True  # no repo configured — assume exists
+    if _grep_repo(repo_dir):
+        return True
+
+    # Search all cloned submodule repos
     try:
-        result = subprocess.run(
-            ["git", "grep", "-l", "--", f"implements.*{service_interface}"],
-            cwd=repo_dir, capture_output=True, text=True, timeout=10,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-        return bool(result.stdout.strip())
+        import json as _json
+        from pathlib import Path as _Path
+        _rc = _json.loads(_Path("data/repo_config.json").read_text())
+        # Find the customer config that matches this repo_dir
+        for _cname, _ccfg in _rc.items():
+            if _ccfg.get("git_local_dir") == repo_dir:
+                for _sm in _ccfg.get("submodules", []):
+                    _sm_dir = _sm.get("local_dir", "")
+                    if _sm_dir and _Path(_sm_dir).exists() and _grep_repo(_sm_dir):
+                        return True
+                for _ar in _ccfg.get("additional_repos", []):
+                    _ar_dir = _ar.get("local_dir", "")
+                    if _ar_dir and _Path(_ar_dir).exists() and _grep_repo(_ar_dir):
+                        return True
+                break
     except Exception:
-        return True  # assume exists on error
+        pass
+
+    # Also check the submodules directory directly
+    try:
+        _sm_base = Path(repo_dir).parent / "submodules"
+        if _sm_base.exists():
+            for _sm_path in _sm_base.iterdir():
+                if _sm_path.is_dir() and (_sm_path / ".git").exists() or (_sm_path / "objects").exists():
+                    if _grep_repo(str(_sm_path)):
+                        return True
+    except Exception:
+        pass
+
+    return False
 
 
 def read_current_file(repo_dir: str, filepath: str) -> Optional[str]:

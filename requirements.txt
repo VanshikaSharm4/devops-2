@@ -1,4 +1,5 @@
 anthropic
+javalang
 azure-storage-file-share
 chromadb
 drain3

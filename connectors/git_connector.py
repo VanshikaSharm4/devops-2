@@ -16,9 +16,9 @@ from urllib.parse import quote
 
 MAX_DIFF_BYTES = 500_000
 
-# Only fetch from remote once every N minutes — avoids a network round-trip on every click
+# Per-repo fetch TTL — keyed by repo_dir so HDFC TTL doesn't block IDFC
 _GIT_FETCH_TTL_MIN = int(os.getenv("GIT_FETCH_TTL_MINUTES", "10"))
-_last_fetch_ts: float = 0.0
+_last_fetch_ts: dict = {}   # {repo_dir: timestamp}
 
 
 # ── Config from .env ─────────────────────────────────────────
@@ -67,14 +67,14 @@ def _git(*args: str, cwd: Optional[str] = None, repo_dir: Optional[str] = None) 
     return result.stdout
 
 
-def _commit_parents(sha: str) -> List[str]:
+def _commit_parents(sha: str, repo_dir: Optional[str] = None) -> List[str]:
     """Return parent SHAs for a commit, ordered as Git reports them."""
-    line = _git("rev-list", "--parents", "-n", "1", sha).strip()
+    line = _git("rev-list", "--parents", "-n", "1", sha, repo_dir=repo_dir).strip()
     parts = line.split()
     return parts[1:] if len(parts) > 1 else []
 
 
-def _changed_files_for_commit(sha: str) -> List[str]:
+def _changed_files_for_commit(sha: str, repo_dir: Optional[str] = None) -> List[str]:
     """
     Return files changed by a commit from the pre-deploy perspective.
 
@@ -82,9 +82,9 @@ def _changed_files_for_commit(sha: str) -> List[str]:
     `git diff-tree -r <merge>` can return an empty diff, which makes a real
     PR/subtree import look like a zero-file commit.
     """
-    parents = _commit_parents(sha)
+    parents = _commit_parents(sha, repo_dir=repo_dir)
     if parents:
-        files_out = _git("diff", "--find-renames", "--name-only", parents[0], sha)
+        files_out = _git("diff", "--find-renames", "--name-only", parents[0], sha, repo_dir=repo_dir)
     else:
         files_out = _git(
             "diff-tree",
@@ -93,6 +93,7 @@ def _changed_files_for_commit(sha: str) -> List[str]:
             "-r",
             "--name-only",
             sha,
+            repo_dir=repo_dir,
         )
 
     changed_files: List[str] = []
@@ -105,11 +106,11 @@ def _changed_files_for_commit(sha: str) -> List[str]:
     return changed_files
 
 
-def _diff_for_commit(sha: str) -> str:
+def _diff_for_commit(sha: str, repo_dir: Optional[str] = None) -> str:
     """Return a patch for a commit using the same parent selection as files."""
-    parents = _commit_parents(sha)
+    parents = _commit_parents(sha, repo_dir=repo_dir)
     if parents:
-        return _git("diff", "--find-renames", parents[0], sha)
+        return _git("diff", "--find-renames", parents[0], sha, repo_dir=repo_dir)
     return _git(
         "diff-tree",
         "--root",
@@ -117,6 +118,7 @@ def _diff_for_commit(sha: str) -> str:
         "-r",
         "-p",
         sha,
+        repo_dir=repo_dir,
     )
 
 
@@ -147,9 +149,10 @@ def clone_or_update() -> str:
         _write_sync_state(repo_dir, synced=True)
         return str(repo_dir)
 
-    # Repo exists — only fetch if TTL has expired
+    # Repo exists — only fetch if TTL has expired (per-repo, not global)
     global _last_fetch_ts
-    elapsed_min = (time.time() - _last_fetch_ts) / 60
+    _repo_key = str(repo_dir)
+    elapsed_min = (time.time() - _last_fetch_ts.get(_repo_key, 0.0)) / 60
     if elapsed_min < _GIT_FETCH_TTL_MIN:
         print(f"  [git] Skipping fetch — last fetch {elapsed_min:.1f} min ago (TTL {_GIT_FETCH_TTL_MIN} min)")
         return str(repo_dir)
@@ -170,38 +173,53 @@ def clone_or_update() -> str:
         fetch_result = subprocess.run(
             ["git", "fetch", "--prune", auth_url, "+refs/heads/*:refs/remotes/origin/*"],
             cwd=str(repo_dir), capture_output=True, text=True,
-            timeout=30, env=_env,
+            timeout=20, env=_env,
         )
         if fetch_result.returncode != 0:
             raise RuntimeError(fetch_result.stderr[:300])
 
-        # Detect current branch
+        # Detect current branch — also check GIT_BRANCH env var (customer-specific)
         branch_result = subprocess.run(
             ["git", "symbolic-ref", "--short", "HEAD"],
             cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
         )
         branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
 
-        if branch:
+        # If HEAD is detached or on wrong branch, use the customer's configured branch
+        configured_branch = os.getenv("GIT_BRANCH", "").strip()
+        target_branch = branch or configured_branch
+
+        if target_branch:
+            # Strip "origin/" prefix if present (some configs pass full remote ref)
+            _bare = target_branch.replace("origin/", "").strip()
             merge_result = subprocess.run(
-                ["git", "merge", "--ff-only", f"refs/remotes/origin/{branch}"],
+                ["git", "merge", "--ff-only", f"refs/remotes/origin/{_bare}"],
                 cwd=str(repo_dir), capture_output=True, text=True,
                 timeout=30, env=_env,
             )
             if merge_result.returncode == 0:
-                print(f"  [git] Fast-forwarded branch '{branch}'.")
+                print(f"  [git] Fast-forwarded branch '{_bare}'.")
             else:
-                print(f"  [git] Merge warning: {merge_result.stderr[:200]}")
+                # Try checkout + pull for remote-tracking branches (e.g. stage_and_prod)
+                _co = subprocess.run(
+                    ["git", "checkout", "-B", _bare, f"origin/{_bare}"],
+                    cwd=str(repo_dir), capture_output=True, text=True,
+                    timeout=30, env=_env,
+                )
+                if _co.returncode == 0:
+                    print(f"  [git] Switched to branch '{_bare}' (fast-forward).")
+                else:
+                    print(f"  [git] Merge warning: {merge_result.stderr[:200]}")
         else:
-            print("  [git] Detached HEAD — fetch only, no pull.")
+            print("  [git] Detached HEAD and no GIT_BRANCH configured — fetch only.")
 
         _write_sync_state(repo_dir, synced=True)
-        _last_fetch_ts = time.time()
+        _last_fetch_ts[_repo_key] = time.time()
 
     except Exception as e:
         print(f"  [git] Sync failed ({type(e).__name__}: {e}) — using local commits.")
         _write_sync_state(repo_dir, synced=False, error=str(e))
-        _last_fetch_ts = time.time()  # don't retry immediately on failure either
+        _last_fetch_ts[_repo_key] = time.time()  # don't retry immediately on failure either
 
     return str(repo_dir)
 
@@ -286,7 +304,7 @@ def _fetch_all(repo_dir: Optional[str] = None) -> None:
             pass
 
     result = subprocess.run(
-        fetch_cmd, cwd=cwd, capture_output=True, text=True, timeout=120, env=_env,
+        fetch_cmd, cwd=cwd, capture_output=True, text=True, timeout=30, env=_env,
     )
     if result.returncode != 0:
         print(f"  [git] fetch failed: {result.stderr[:300]}")
@@ -301,34 +319,46 @@ def get_commit_diff(repo: Optional[str], sha: str) -> Dict[str, Any]:
 
     clone_or_update()
 
-    # If SHA not found locally, do a full fetch (picks up all remote branches)
+    # If SHA not found locally, force a fresh fetch regardless of TTL.
+    # The TTL prevents redundant fetches in normal flow, but when a specific SHA
+    # is requested and not found, we MUST refetch — the commit was pushed after the
+    # last TTL fetch. Reset TTL so clone_or_update fetches immediately.
     if not _sha_exists(sha, repo_dir):
-        print(f"  [git] SHA {sha[:12]} not found locally — fetching all branches...")
-        _fetch_all(repo_dir)
+        _repo_key = str(_local_dir(repo_dir))
+        _last_fetch_ts[_repo_key] = 0.0  # reset TTL → force fetch
+        print(f"  [git] SHA {sha[:12]} not found — resetting TTL and fetching from remote...")
+        clone_or_update()  # now runs the fetch since TTL was reset
+        if not _sha_exists(sha, repo_dir):
+            # Still not found after fetch — try targeted fetch of just this SHA
+            try:
+                _fetch_all(repo_dir)
+            except Exception as _fe:
+                print(f"  [git] Fetch failed: {_fe}")
         if not _sha_exists(sha, repo_dir):
             raise RuntimeError(
-                f"SHA {sha} not found in local repo at {_local_dir(repo_dir)}. "
-                f"Ensure the correct repository is cloned and the branch containing "
-                f"this commit has been pushed to the remote."
+                f"SHA {sha[:12]} not found after fetch. "
+                f"The commit may be on a branch not tracked locally, or credentials may be wrong."
             )
 
-    title  = _git("log", "-1", "--format=%s",  sha, repo_dir=repo_dir).strip()
-    body   = _git("log", "-1", "--format=%b",  sha, repo_dir=repo_dir).strip()
-    author = _git("log", "-1", "--format=%an", sha, repo_dir=repo_dir).strip()
+    title       = _git("log", "-1", "--format=%s",  sha, repo_dir=repo_dir).strip()
+    body        = _git("log", "-1", "--format=%b",  sha, repo_dir=repo_dir).strip()
+    author      = _git("log", "-1", "--format=%an", sha, repo_dir=repo_dir).strip()
+    commit_date = _git("log", "-1", "--format=%ai", sha, repo_dir=repo_dir).strip()[:10]  # YYYY-MM-DD
 
-    changed_files = _changed_files_for_commit(sha)
-    diff_out = _diff_for_commit(sha)
+    changed_files = _changed_files_for_commit(sha, repo_dir=repo_dir)
+    diff_out = _diff_for_commit(sha, repo_dir=repo_dir)
     diff_excerpt = diff_out[:MAX_DIFF_BYTES]
     if len(diff_out.encode()) > MAX_DIFF_BYTES:
         diff_excerpt += "\n\n... [diff truncated]"
 
     return {
-        "commit_sha": sha,
-        "title": title,
-        "body": body,
-        "author": author,
+        "commit_sha":  sha,
+        "title":       title,
+        "body":        body,
+        "author":      author,
+        "commit_date": commit_date,
         "changed_files": changed_files,
-        "diff_excerpt": diff_excerpt,
+        "diff_excerpt":  diff_excerpt,
     }
 
 
@@ -423,17 +453,69 @@ def find_files_for_parsed_error(repo: Optional[str], parsed_error: dict) -> List
 # ── Utility ──────────────────────────────────────────────────
 
 def get_recent_commits(branch: str = "", n: int = 10) -> List[Dict[str, str]]:
-    """Get the last N commits on a branch — useful for picking SHAs."""
+    """
+    Get the last N commits on a branch — useful for picking SHAs.
+
+    Branch resolution order (handles both local and remote-tracking refs):
+    1. Passed branch name as-is (e.g. "stage_and_prod")
+    2. "origin/{branch}" — remote-tracking ref (most repos only have this)
+    3. Current HEAD branch
+    4. "main" / "master" fallback
+    """
     clone_or_update()
-    if not branch:
+
+    # Resolve which ref to read from
+    _branch_ref = ""
+    if branch:
+        # Strip "origin/" prefix if already included — we'll add it if needed
+        _bare = branch.replace("origin/", "").strip()
+        # Try local branch first, then remote-tracking ref
+        for _ref in (_bare, f"origin/{_bare}"):
+            try:
+                _git("rev-parse", "--verify", _ref)
+                _branch_ref = _ref
+                break
+            except RuntimeError:
+                continue
+
+    if not _branch_ref and branch:
+        # Branch not found locally or as origin/ ref — try fetching it explicitly.
+        # Only attempt if credentials are configured — skip silently if password is empty
+        # to avoid auth failure errors and 30-second timeouts.
+        _bare = branch.replace("origin/", "").strip()
+        _has_creds = bool(os.getenv("CM_GIT_PASSWORD", "").strip())
+        if not _has_creds:
+            print(f"  [git] Branch '{_bare}' not found locally and no credentials set — skipping fetch")
+        else:
+            try:
+                print(f"  [git] Branch '{_bare}' not found locally — fetching from remote…")
+                _env2 = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+                _auth = _auth_url()
+                subprocess.run(
+                    ["git", "fetch", _auth, f"refs/heads/{_bare}:refs/remotes/origin/{_bare}"],
+                    cwd=_local_dir(), capture_output=True, text=True, timeout=30, env=_env2,
+                )
+                _git("rev-parse", "--verify", f"origin/{_bare}")
+                _branch_ref = f"origin/{_bare}"
+                print(f"  [git] Fetched branch '{_bare}' → {_branch_ref}")
+            except Exception:
+                pass
+
+    if not _branch_ref:
+        # Fallback — use current HEAD
         try:
-            branch = _git("symbolic-ref", "--short", "HEAD").strip()
+            _branch_ref = _git("symbolic-ref", "--short", "HEAD").strip()
         except RuntimeError:
             try:
-                branch = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
+                _branch_ref = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
             except RuntimeError:
-                branch = "main"
-    out = _git("log", f"-{n}", "--format=%H|%s|%an|%ar", branch)
+                _branch_ref = "main"
+
+    try:
+        out = _git("log", f"-{n}", "--format=%H|%s|%an|%ar", _branch_ref)
+    except RuntimeError:
+        return []
+
     commits = []
     for line in out.strip().splitlines():
         parts = line.split("|", 3)
@@ -480,9 +562,32 @@ def get_all_commits_with_times(
         datetime.datetime.utcnow() - datetime.timedelta(days=days_back)
     ).strftime("%Y-%m-%d")
     try:
-        out = _git("log", f"--after={since}", "--format=%H|%s|%an|%aI", branch)
+        if branch:
+            # Resolve: try local branch first, then origin/ remote-tracking ref
+            # If neither exists, fall back to --all so we don't call git log with
+            # an unknown ref (which causes "ambiguous argument" fatal error)
+            _bare = branch.replace("origin/", "").strip()
+            _resolved = ""  # empty = not found yet, will use --all fallback
+            for _ref in (_bare, f"origin/{_bare}"):
+                try:
+                    _git("rev-parse", "--verify", _ref)
+                    _resolved = _ref
+                    break
+                except RuntimeError:
+                    continue
+            if _resolved:
+                out = _git("log", f"--after={since}", "--format=%H|%s|%an|%aI", _resolved)
+            else:
+                # Branch not found locally or as remote ref — search all refs
+                out = _git("log", "--all", f"--after={since}", "--format=%H|%s|%an|%aI")
+        else:
+            out = _git("log", "--all", f"--after={since}", "--format=%H|%s|%an|%aI")
     except RuntimeError:
-        return []
+        # Branch may not exist locally — fall back to --all
+        try:
+            out = _git("log", "--all", f"--after={since}", "--format=%H|%s|%an|%aI")
+        except RuntimeError:
+            return []
     commits = []
     for line in out.strip().splitlines():
         parts = line.split("|", 3)
@@ -591,3 +696,115 @@ def correlate_executions_to_commits(
             }
 
     return result
+
+
+# ── Submodule file reader (fetch-only, no clone) ─────────────────────────────
+# Reads files from a submodule at a specific SHA by fetching objects directly
+# into the PARENT repo's object store — no separate directory, no working copy.
+#
+# How it works:
+#   git -C <parent_repo> fetch --depth=1 <submodule_url> <sha>
+#   git -C <parent_repo> show <sha>:path/to/file.java
+#
+# Disk cost: ~2-10MB of compressed objects added to the parent's .git/objects/
+# (which already exists). Same SHA fetched twice = zero additional disk.
+# No new directories, no bare repos, no clones.
+
+
+def read_submodule_file(
+    submodule_name: str,
+    submodule_sha: str,
+    file_path: str,
+    remote_url: str = "",
+    parent_repo_dir: str = "",
+) -> Optional[str]:
+    """
+    Read a file from a submodule at a specific SHA without cloning.
+
+    Fetches only the needed commit objects into the parent repo's object store,
+    then reads the file directly. No working copy, no separate directory.
+
+    Args:
+        submodule_name:   e.g. "hdfcbankcustomerinfo" (for logging only)
+        submodule_sha:    exact SHA the parent bumped to
+        file_path:        path inside submodule e.g. "core/src/main/.../Foo.java"
+        remote_url:       authenticated URL for the submodule remote
+        parent_repo_dir:  parent repo path (defaults to GIT_LOCAL_DIR env var)
+
+    Returns:
+        File content as string, or None if unavailable.
+    """
+    repo = parent_repo_dir or os.getenv("GIT_LOCAL_DIR", "")
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        return None
+
+    _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+
+    # Check if SHA already in parent's object store
+    _has = subprocess.run(
+        ["git", "-C", repo, "cat-file", "-t", submodule_sha],
+        capture_output=True, text=True, timeout=5, env=_env,
+    ).returncode == 0
+
+    if not _has and remote_url:
+        # Fetch just this commit's objects into parent's .git/objects — no clone
+        try:
+            subprocess.run(
+                ["git", "-C", repo, "fetch", "--depth=1", remote_url, submodule_sha],
+                capture_output=True, text=True, timeout=30, env=_env,
+            )
+        except Exception:
+            pass
+
+    if not file_path:
+        return None
+
+    # Read file from object store — no working copy needed
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "show", f"{submodule_sha}:{file_path}"],
+            capture_output=True, text=True, timeout=10, env=_env,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except Exception:
+        pass
+    return None
+
+
+def list_submodule_files(
+    submodule_name: str,
+    submodule_sha: str,
+    directory: str = "",
+    remote_url: str = "",
+    pattern: str = "*.java",
+    parent_repo_dir: str = "",
+) -> List[str]:
+    """
+    List files in a submodule directory at a specific SHA.
+    Uses the same fetch-into-parent approach as read_submodule_file.
+    """
+    repo = parent_repo_dir or os.getenv("GIT_LOCAL_DIR", "")
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        return []
+
+    # Ensure objects are fetched
+    if not read_submodule_file.__wrapped__ if hasattr(read_submodule_file, '__wrapped__') else True:
+        read_submodule_file(submodule_name, submodule_sha, "", remote_url, repo)
+
+    _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+    try:
+        tree_ref = f"{submodule_sha}:{directory}" if directory else submodule_sha
+        result = subprocess.run(
+            ["git", "-C", repo, "ls-tree", "-r", "--name-only", tree_ref],
+            capture_output=True, text=True, timeout=10, env=_env,
+        )
+        if result.returncode == 0:
+            files = result.stdout.strip().splitlines()
+            if pattern:
+                import fnmatch
+                files = [f for f in files if fnmatch.fnmatch(f.split("/")[-1], pattern)]
+            return files
+    except Exception:
+        pass
+    return []

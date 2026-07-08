@@ -94,6 +94,19 @@ def compute_rule_scores(bundle: AnalysisBundle) -> RuleScores:
         else 100.0
     )
 
+    # Security-relevant file check — securityTest is only commit-caused when
+    # the diff touches dispatcher, auth, OSGi security config, or AEM security paths.
+    # Test-only changes, pom.xml version bumps, and core Java changes do NOT cause
+    # securityTest failures (which are AEM node config checks — CRXDE, DavEx, dispatcher).
+    _security_relevant_files = [
+        f for f in changed_files
+        if any(k in f.lower() for k in (
+            "dispatcher", "ui.config", ".any", ".vhost", ".farm",
+            "security", "auth", "acl", "oauth", "crxde", "runmode",
+        ))
+    ]
+    _has_security_relevant = bool(_security_relevant_files)
+
     def _apply_historical_prior(step: str, touched_modules: list[str]) -> None:
         nonlocal build_risk, security_risk, deploy_risk
         count = int(history_by_step.get(step, 0) or 0)
@@ -105,6 +118,17 @@ def compute_rule_scores(bundle: AnalysisBundle) -> RuleScores:
             and profile.removed_reactor_modules
             and not profile.added_reactor_modules
         ):
+            return
+        # securityTest historical prior only applies when commit actually touches
+        # security-relevant files. Historical securityTest failures in most AEM
+        # pipelines are CRXDE/DavEx/dispatcher env issues — not commit-caused.
+        # Applying this prior to test-only or pom-only commits causes every commit
+        # on unhealthy pipelines to get securityTest MEDIUM regardless of code.
+        if step == "securityTest" and not _has_security_relevant:
+            reasons.append(
+                f"Note: {count} historical {step} failures exist but commit has no "
+                "dispatcher/security-config changes — prior not applied (env-caused failures)."
+            )
             return
         module_list = ", ".join(touched_modules[:3])
         reasons.append(
@@ -125,12 +149,20 @@ def compute_rule_scores(bundle: AnalysisBundle) -> RuleScores:
     if success_rate < 50:
         security_count = int(history_by_step.get("securityTest", 0) or 0)
         if security_count >= 5:
+            # DO NOT elevate security_risk here — this is a pipeline health indicator,
+            # not a commit-caused risk signal. Elevating security_risk for every commit
+            # when the pipeline has a low success rate causes ALL commits to get
+            # securityTest HIGH regardless of what changed (e.g. IDFC: 7.5% success,
+            # 62 securityTest failures → every commit flagged HIGH).
+            # The env signal (EnvSignal from Splunk) already handles this correctly.
+            # Rule_scores.securityTest should only be elevated by actual code changes:
+            # dispatcher/auth/ui.config modifications — not pipeline history counts.
             security_level = "HIGH" if success_rate < 20 else "MEDIUM"
-            security_risk = _max_level(security_risk, security_level)
             reasons.append(
-                f"SECURITYTEST {security_level}: pipeline success rate is {success_rate}% and "
-                f"securityTest has {security_count} recent failures/cancellations — "
-                "operational stage risk, not necessarily commit-caused"
+                f"Note: pipeline success rate is {success_rate}% with {security_count} "
+                f"recent securityTest failures — this is an environment/ops issue (CRXDE/DavEx), "
+                f"not caused by this commit. The environment advisory reflects this separately. "
+                f"securityTest score NOT elevated in rule_scores to avoid false positives."
             )
 
     # ── Step 4a: BUILD RISK ───────────────────────────────────────────────────

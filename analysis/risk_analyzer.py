@@ -42,8 +42,15 @@ def attach_git_context(
         bundle.rule_scores = compute_rule_scores(bundle)
         return bundle
 
+    repo_dir = (
+        repo
+        or bundle.__dict__.get("git_local_dir")
+        or os.getenv("GIT_LOCAL_DIR", "")
+        or None
+    )
+
     try:
-        data = get_commit_diff(repo, commit_sha)
+        data = get_commit_diff(repo_dir, commit_sha)
     except Exception:
         data = {}
     bundle.git_context = GitContext(
@@ -51,6 +58,7 @@ def attach_git_context(
         title=data.get("title", ""),
         body=data.get("body", ""),
         author=data.get("author", ""),
+        commit_date=data.get("commit_date", ""),
         changed_files=data.get("changed_files", []),
         aem_modules_touched=get_changed_modules(data.get("changed_files", [])),
         diff_excerpt=data.get("diff_excerpt", ""),
@@ -60,12 +68,48 @@ def attach_git_context(
     return bundle
 
 
+def _resolve_submodule_customer_name(bundle, program_id: str = "") -> str:
+    """Map bundle / program_id to repo_config.json customer key for submodule fetch."""
+    import os as _os
+    from connectors.submodule_connector import get_customer_config, load_repo_config
+
+    candidates = [
+        bundle.__dict__.get("customer_name", ""),
+        _os.getenv("CUSTOMER_NAME", ""),
+    ]
+    for name in candidates:
+        if name and get_customer_config(name):
+            return name
+
+    pid = str(
+        program_id
+        or bundle.__dict__.get("program_id", "")
+        or _os.getenv("PROGRAM_ID", "")
+    )
+    if pid:
+        for cfg_name, cfg in load_repo_config().items():
+            if str(cfg.get("program_id", "")) == pid:
+                return cfg_name
+        try:
+            _cfg_path = Path(_os.getenv("CUSTOMER_CONFIG_PATH", "data/customer_config.json"))
+            if _cfg_path.exists():
+                import json as _json
+                for cfg_name, cfg in _json.loads(_cfg_path.read_text()).items():
+                    if str(cfg.get("program_id", "")) == pid:
+                        return cfg_name
+        except Exception:
+            pass
+    return candidates[0] if candidates else ""
+
+
 def run_pre_deploy_risk(
     pr_number: Optional[int] = None,
     commit_sha: Optional[str] = None,
     fetch_logs: bool = True,
     use_llm: bool = True,
     bundle: Optional[AnalysisBundle] = None,
+    as_of_date: Optional[str] = None,
+    pipeline_name: Optional[str] = None,
 ) -> Tuple[AnalysisBundle, Optional[RiskReport], str]:
     """
     Run full pre-deploy risk pipeline.
@@ -75,6 +119,49 @@ def run_pre_deploy_risk(
     if bundle is None:
         bundle, _, _, _ = build_base_bundle(fetch_logs=fetch_logs)
     bundle = attach_git_context(bundle, pr_number=pr_number, commit_sha=commit_sha)
+
+    # Inject caller-supplied as_of_date and pipeline_name so downstream
+    # env assessment uses the right historical window (e.g. for batch evaluation
+    # of historical SHAs we don't want to use today's env state).
+    if as_of_date:
+        bundle.__dict__["execution_date"] = as_of_date
+    if pipeline_name:
+        bundle.__dict__["pipeline_name"] = pipeline_name
+
+    # ── Load Splunk data ONCE — reused by all signals below ───────────────────
+    # Previously load_data() was called 3-4 times independently, each potentially
+    # triggering a full Splunk fetch when the disk cache was stale.
+    _program_id = os.getenv("PROGRAM_ID", "")
+    try:
+        from analysis.ingest import load_data as _load_once
+        _pdf_main, _fdf_main, _fsfdf_main, _share_main = _load_once()
+    except Exception:
+        _pdf_main = _fdf_main = _fsfdf_main = None
+        _share_main = {}
+    if commit_sha and _program_id and use_llm and not os.getenv("ARGUS_DISABLE_CACHE"):
+        try:
+            from analysis.assessment_cache import get_cached
+            # load_data already called once above as _pdf_main, _fdf_main
+            from models.risk_report import RiskReport as _RR
+            _pdf_c, _fdf_c = _pdf_main, _fdf_main
+            # Get current consecutive failures to validate cache freshness
+            from analysis.env_readiness import assess_environment_readiness as _aer, DEFAULT_PROD_PIPELINE
+            _env_c = _aer(_pdf_c, _fdf_c, pipeline_name=DEFAULT_PROD_PIPELINE)
+            _consec = _env_c.get("consecutive_failures", -1) if _env_c else -1
+            from analysis.assessment_cache import get_cached_llm_fields
+            _cached_llm = get_cached_llm_fields(_program_id, commit_sha, _consec)
+            if _cached_llm:
+                # Restore LLM fields into a RiskReport shell
+                _report = _RR(**{k: v for k, v in _cached_llm.items()
+                                 if k in _RR.model_fields})
+                # Always rerun scorer — scorer fields are NEVER cached
+                # This ensures risk_level/confidence/step reflect current env + scorer version
+                bundle.__dict__["_from_llm_cache"] = True
+                # Fall through to scorer block below (don't return early)
+                # Store cached report so scorer can enrich it
+                bundle.__dict__["_cached_report"] = _report
+        except Exception:
+            pass  # cache miss or error — proceed normally
 
     if not use_llm:
         from models.risk_report import RiskReport, StepRisk
@@ -133,6 +220,35 @@ def run_pre_deploy_risk(
         md = _rules_only_markdown(bundle, report)
         return bundle, report, md
 
+    # ── Submodule diff enrichment — fetch actual code before structural analysis ──
+    # If the parent diff only shows submodule pointer changes, fetch the real code
+    # from the submodule repos so the LLM has something meaningful to analyze.
+    try:
+        from connectors.submodule_connector import get_submodule_diffs, summarize_submodule_diffs
+        import os as _os2
+        _git_ctx_pre = bundle.git_context
+        _customer = _resolve_submodule_customer_name(bundle, _program_id)
+        if _git_ctx_pre and _git_ctx_pre.diff_excerpt and _customer:
+            _sm_diffs = get_submodule_diffs(_git_ctx_pre.diff_excerpt, _customer)
+            if _sm_diffs:
+                # Limit submodules to LLM — large diffs cause JSON truncation → retries → timeout
+                # When total diff is large (>10KB), only send the most changed submodule
+                # Each submodule is capped at 3KB in summarize_submodule_diffs
+                _total_sm_size = sum(len(v) for v in _sm_diffs.values())
+                _sm_limit = 1 if _total_sm_size > 10_000 else 2
+                _sm_top = dict(
+                    sorted(_sm_diffs.items(), key=lambda x: len(x[1]), reverse=True)[:_sm_limit]
+                )
+                _sm_summary = summarize_submodule_diffs(_sm_top)
+                bundle.__dict__["submodule_diffs"] = _sm_diffs  # keep all for scorer
+                bundle.__dict__["submodule_summary"] = _sm_summary
+                # Only send top 3 to LLM
+                _git_ctx_pre.diff_excerpt = (
+                    (_git_ctx_pre.diff_excerpt or "") + "\n\n" + _sm_summary
+                )
+    except Exception:
+        pass  # submodule enrichment is optional — never block main flow
+
     # ── Structural analysis first (deterministic, high confidence) ──────────────
     try:
         from analysis.build_predictor import predict_build_failures
@@ -141,10 +257,11 @@ def run_pre_deploy_risk(
         if git_ctx:
             repo_dir = bundle.__dict__.get("git_local_dir") or _os.getenv("GIT_LOCAL_DIR", "")
             structural = predict_build_failures(
-                diff_text     = git_ctx.diff_excerpt or "",
-                changed_files = git_ctx.changed_files or [],
-                commit_title  = git_ctx.title or "",
-                repo_dir      = repo_dir,
+                diff_text       = git_ctx.diff_excerpt or "",
+                changed_files   = git_ctx.changed_files or [],
+                commit_title    = git_ctx.title or "",
+                repo_dir        = repo_dir,
+                submodule_diffs = bundle.__dict__.get("submodule_diffs") or None,
             )
             # If structural analysis is certain enough, inject findings into bundle context
             if structural.is_structural and structural.findings:
@@ -176,27 +293,52 @@ def run_pre_deploy_risk(
 
                     # Also check pipeline_df/failed_df from bundle context
                     try:
-                        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS
-                        from analysis.ingest import load_data
-                        _pdf, _fdf, _, _ = load_data()
-                        env = assess_environment_readiness(_pdf, _fdf)
+                        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS, DEFAULT_PROD_PIPELINE
+                        _pdf, _fdf = _pdf_main, _fdf_main
+                        env = assess_environment_readiness(
+                            _pdf, _fdf, pipeline_name=DEFAULT_PROD_PIPELINE
+                        )
                         if env and env["status"] in ("NOT_READY", "CAUTION"):
                             _dom = env.get("dominant_step", "")
                             if _dom in ENV_STEPS:
-                                sec_level = "High" if env["status"] == "NOT_READY" else "Medium"
+                                _win_count = env.get("env_step_failure_count", 0)
+                                _consec_env = env.get("consecutive_failures", 0)
+                                # High when: NOT_READY, OR CAUTION with window failures (even if consecutive=0)
+                                # Medium when: CAUTION with 1+ consecutive
+                                # Low when: CAUTION with 0 consecutive and 0 window failures
+                                if env["status"] == "NOT_READY":
+                                    sec_level = "High"
+                                elif _consec_env > 0 or _win_count > 0:
+                                    sec_level = "High" if _win_count >= 3 else "Medium"
+                                else:
+                                    sec_level = "Low"
                                 sec_rationale = env["recommendation"]
                                 env_actions = [
                                     f"Environment issue detected: {env['recommendation']}",
                                     f"Dominant failing step: {_dom} ({env['consecutive_failures']} consecutive failures)",
                                     f"Last success: {env['last_success_ago']}",
                                 ]
-                                # Escalate overall risk if environment is bad
-                                if sec_level == "High":
+                                # Escalate overall risk if environment is bad.
+                                # IMPORTANT: do NOT escalate Low → Medium when the
+                                # env failure is infrastructure (securityTest/deploy/loadTest)
+                                # and the code risk is Low. These are unrelated — the
+                                # commit didn't cause the infra failures. Escalating here
+                                # causes ~87% false positive rate on FINISHED runs.
+                                # Only escalate when the env failure is at build/codeQuality
+                                # (which IS code-caused) or overall risk is already Medium+.
+                                _is_infra_env_step = _dom in ENV_STEPS  # securityTest/deploy/loadTest
+                                if sec_level == "High" and not _is_infra_env_step:
                                     final_risk = "High"
                                     final_step = _dom
-                                elif final_risk == "Low":
+                                elif final_risk != "Low" and sec_level == "High":
+                                    # Already medium/high — env adds weight, don't suppress
+                                    final_risk = "High"
+                                    final_step = _dom
+                                elif final_risk == "Low" and not _is_infra_env_step:
+                                    # Only escalate Low→Medium when env fails at build (code-caused)
                                     final_risk = "Medium"
                                     final_step = _dom
+                                # else: Low code risk + infra env step → keep Low, advisory only
                     except Exception:
                         pass
 
@@ -222,6 +364,45 @@ def run_pre_deploy_risk(
                         ),
                         reasoning=_build_structural_reasoning(structural),
                     )
+
+                    # Attach code-only recommendation + signals so dashboard hero
+                    # uses correct confidence (not the structural.confidence which is
+                    # detection confidence, not prediction confidence)
+                    try:
+                        from analysis.risk_scorer import (
+                            code_recommendation as _cr_fn, CodeSignal as _CS,
+                            EnvSignal as _ES,
+                        )
+                        # Normalise predicted_risk to uppercase for consistent comparison
+                        # BuildPrediction uses "High"/"Medium"/"Low" mixed case
+                        _pr_upper = structural.predicted_risk.upper() if structural.predicted_risk else "LOW"
+                        _code_for_rec = _CS(
+                            level=_pr_upper if _pr_upper in ("HIGH", "CERTAIN", "MEDIUM") else "LOW",
+                            # confidence > 1 means it's a percentage (e.g. 65), divide by 100
+                            # confidence ≤ 1 means it's already a ratio (e.g. 0.65), use directly
+                            score=structural.confidence / 100.0 if structural.confidence > 1 else structural.confidence,
+                            detail=structural.summary,
+                            findings=[f"[{f.severity}] {f.title} ({f.confidence}% certain)" for f in structural.findings],
+                            is_submodule_only=False, has_real_code=True,
+                        )
+                        _cr, _cc, _cb = _cr_fn(_code_for_rec)
+                        report.__dict__["_code_recommendation"]   = _cr
+                        report.__dict__["_code_confidence"]       = _cc
+                        report.__dict__["_code_confidence_basis"] = _cb
+                        # Attach env signal so dashboard env advisory uses window data
+                        if env:
+                            report.__dict__["_env_signal_raw"] = env
+                        # Attach _code_signal for display
+                        report.__dict__["_code_signal_override"] = {
+                            "level":    _code_for_rec.level,
+                            "score":    _code_for_rec.score,
+                            "detail":   structural.summary,
+                            "findings": [f"[{f.severity}] {f.title} ({f.confidence}% certain)"
+                                         for f in structural.findings],
+                        }
+                    except Exception:
+                        pass
+
                     return bundle, report, _structural_markdown(bundle, report, structural)
     except Exception:
         pass  # structural analysis is additive — never block LLM path
@@ -229,10 +410,11 @@ def run_pre_deploy_risk(
     # ── Always run environment check — inject into bundle before LLM ──────────
     # This ensures the LLM always sees environment state regardless of code analysis
     try:
-        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS
-        from analysis.ingest import load_data
-        _pdf, _fdf, _, _ = load_data()
-        _env = assess_environment_readiness(_pdf, _fdf)
+        from analysis.env_readiness import assess_environment_readiness, ENV_STEPS, DEFAULT_PROD_PIPELINE
+        _pdf, _fdf = _pdf_main, _fdf_main
+        _env = assess_environment_readiness(
+            _pdf, _fdf, pipeline_name=DEFAULT_PROD_PIPELINE
+        )
         if _env:
             bundle.__dict__["environment_readiness"] = {
                 "status":               _env["status"],
@@ -248,36 +430,206 @@ def run_pre_deploy_risk(
     from agent.devops_agent import run_risk_analysis
 
     bundle_dict = bundle.model_dump(mode="json")
+    if bundle.__dict__.get("submodule_diffs"):
+        bundle_dict["submodule_diffs"] = bundle.__dict__["submodule_diffs"]
+    # Java upgrade validation flag — feeds perf-risk checks and LLM context
+    if bundle.__dict__.get("java_upgrade_pending"):
+        bundle_dict["java_upgrade_pending"] = True
+    else:
+        from analysis.risk_scorer import infer_java_upgrade_pending as _infer_jdk
+        bundle_dict["java_upgrade_pending"] = _infer_jdk(
+            bundle_dict,
+            _pdf_main,
+            str(bundle.__dict__.get("dev_execution_id") or ""),
+        )
+    bundle_dict["dev_execution_id"] = str(bundle.__dict__.get("dev_execution_id") or "")
     # Carry env_readiness and structural_findings into bundle_dict (not in Pydantic model)
     if "environment_readiness" in bundle.__dict__:
         bundle_dict["environment_readiness"] = bundle.__dict__["environment_readiness"]
     if "structural_findings" in bundle.__dict__:
         bundle_dict["structural_findings"] = bundle.__dict__["structural_findings"]
 
-    report = run_risk_analysis(bundle_dict)
-
-    # ── Post-processing: enforce most_likely_failure_step = highest risk step ──
-    # The LLM sometimes names a code-caused step (e.g. deploy) as most likely even
-    # when an env step (e.g. securityTest) has a higher risk level. Override here.
+    # ── Run ChromaDB lookup BEFORE LLM so scorer gets hits independently ────────
+    # Long-term fix: historical signal should not depend on the LLM call at all.
+    # We fetch similar incidents here, inject into bundle_dict, then pass to both
+    # the LLM (for context) and score_risk() (for Signal 3).
     try:
-        if report and report.step_risks:
-            _level_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
-            _top_step = max(
-                report.step_risks,
-                key=lambda s: (
-                    _level_order.get(s.level, 0),
-                    s.historical_failure_count or 0,
-                )
-            )
-            _current_level = next(
-                (_level_order.get(s.level, 0) for s in report.step_risks
-                 if s.step == report.most_likely_failure_step),
-                0
-            )
-            if _level_order.get(_top_step.level, 0) > _current_level:
-                report.most_likely_failure_step = _top_step.step
+        from agent.devops_agent import _enrich_risk_with_memory_with_hits
+        from analysis.context_builder import build_risk_context
+        _pre_context = bundle_dict if "commit_profile" in bundle_dict else build_risk_context(bundle_dict)
+        from agent.devops_agent import _build_user_message
+        _, _pre_hits = _enrich_risk_with_memory_with_hits(_build_user_message(_pre_context), _pre_context)
+        if _pre_hits:
+            bundle_dict["similar_incidents"] = _pre_hits
     except Exception:
         pass
+
+    # ── Early score_risk() — skip LLM if signal is already certain ───────────────
+    # Run a quick pre-score before the LLM call.
+    # If env is NOT_READY with high confidence (≥80%), the LLM adds no value
+    # for the decision — it only adds latency and cost.
+    # Still call LLM for narrative, but skip if we already have a certain HOLD.
+    _pre_score = None
+    try:
+        from analysis.risk_scorer import score_risk as _pre_score_risk
+        _pdf_pre, _fdf_pre = _pdf_main, _fdf_main
+        _pre_score = _pre_score_risk(
+            bundle_dict=bundle_dict,
+            diff_text=bundle.git_context.diff_excerpt if bundle.git_context else "",
+            changed_files=bundle.git_context.changed_files if bundle.git_context else [],
+            commit_title=bundle.git_context.title if bundle.git_context else "",
+            pipeline_df=_pdf_pre, failed_df=_fdf_pre,
+            program_id=_program_id,
+        )
+    except Exception:
+        pass
+
+    # Use cached LLM output if available — skip expensive LLM call
+    if bundle.__dict__.get("_from_llm_cache") and bundle.__dict__.get("_cached_report"):
+        report = bundle.__dict__["_cached_report"]
+    elif (
+        _pre_score and
+        _pre_score.recommendation == "HOLD" and
+        _pre_score.confidence >= 0.80 and
+        _pre_score.primary_driver in ("environment", "code") and
+        not bundle.__dict__.get("submodule_diffs")  # still call LLM if we have submodule code to analyze
+    ):
+        # Env/code signal is certain enough — build a minimal report without LLM
+        from models.risk_report import RiskReport, StepRisk
+        print(f"  [risk] Skipping LLM — {_pre_score.primary_driver} signal is HOLD at {int(_pre_score.confidence*100)}% confidence")
+        _risk_map = {"GO": "Low", "CAUTION": "Medium", "HOLD": "High"}
+        report = RiskReport(
+            risk_level=_risk_map[_pre_score.recommendation],
+            confidence_score=int(_pre_score.confidence * 100),
+            commit_sha=commit_sha or "",
+            most_likely_failure_step=_pre_score.env.dominant_step or _pre_score.historical.dominant_step or "unknown",
+            modules_at_risk=bundle.git_context.aem_modules_touched if bundle.git_context else [],
+            step_risks=[],
+            recommended_actions=[_pre_score.env.fix or _pre_score.confidence_basis],
+            narrative=f"{_pre_score.confidence_basis} (LLM skipped — signal confidence ≥80%)",
+        )
+    else:
+        report = run_risk_analysis(bundle_dict)
+
+    # ── score_risk() overrides: risk level, confidence, step ──────────────────
+    # LLM provides narrative + technical_failure_hypotheses only.
+    # score_risk() drives: risk_level, confidence_score, most_likely_failure_step
+    try:
+        from analysis.risk_scorer import score_risk as _score_risk
+        _pdf3, _fdf3 = _pdf_main, _fdf_main
+        _git_ctx3 = bundle.git_context
+
+        # Inject similar_incidents from LLM report into bundle_dict so scorer sees them
+        if report.__dict__.get("similar_incidents_raw"):
+            bundle_dict["similar_incidents"] = report.__dict__["similar_incidents_raw"]
+
+        # Use enriched diff — includes submodule summary appended by enrichment step
+        # bundle.git_context.diff_excerpt was mutated in-place with submodule content
+        _enriched_diff    = (_git_ctx3.diff_excerpt if _git_ctx3 else "") or ""
+        _enriched_files   = list((_git_ctx3.changed_files if _git_ctx3 else []) or [])
+
+        # If submodule diffs were fetched, extract their changed files so
+        # compute_code_signal sees real Java/pom/config files, not just .gitmodules
+        _sm_diffs = bundle.__dict__.get("submodule_diffs") or {}
+        if _sm_diffs:
+            import re as _re_sm
+            for _sm_name, _sm_diff in _sm_diffs.items():
+                for _m in _re_sm.finditer(r'^diff --git a/(.+?) b/', _sm_diff, _re_sm.MULTILINE):
+                    _enriched_files.append(f"{_sm_name}/{_m.group(1)}")
+            bundle_dict["submodule_diffs"] = _sm_diffs
+
+        # LLM step risks — use as fallback when structural rules miss (e.g. reactor churn)
+        if report.step_risks:
+            bundle_dict["llm_step_risks"] = [
+                {
+                    "step": sr.step,
+                    "level": sr.level.value if hasattr(sr.level, "value") else str(sr.level),
+                    "rationale": sr.rationale or "",
+                }
+                for sr in report.step_risks
+            ]
+        if report.most_likely_failure_step:
+            bundle_dict["llm_most_likely_step"] = report.most_likely_failure_step
+        if hasattr(report, "risk_level"):
+            bundle_dict["llm_risk_level"] = (
+                report.risk_level.value if hasattr(report.risk_level, "value") else str(report.risk_level)
+            )
+
+        _exec_id = (
+            bundle.__dict__.get("dev_execution_id")
+            or bundle_dict.get("execution_id")
+            or ""
+        )
+        bundle_dict["execution_id"] = _exec_id
+        from analysis.risk_scorer import infer_java_upgrade_pending
+        bundle_dict["java_upgrade_pending"] = infer_java_upgrade_pending(
+            bundle_dict, _pdf3, str(_exec_id),
+        )
+
+        _decision = _score_risk(
+            bundle_dict           = bundle_dict,
+            diff_text             = _enriched_diff,
+            changed_files         = _enriched_files,
+            commit_title          = (_git_ctx3.title if _git_ctx3 else "") or "",
+            repo_dir              = bundle.__dict__.get("git_local_dir", "") or "",
+            pipeline_df           = _pdf3,
+            failed_df             = _fdf3,
+            program_id            = _program_id or bundle_dict.get("program_id", "") or os.getenv("PROGRAM_ID", ""),
+            dev_execution_status  = bundle.__dict__.get("dev_execution_status", ""),
+            pipeline_name         = bundle.__dict__.get("pipeline_name") or "Production Pipeline",
+            # Use execution_date ONLY when explicitly set (from Splunk execution selection).
+            # Do NOT fall back to commit_date — for live assessments the developer wants
+            # to know today's env state, not the state as of when they wrote the commit.
+            # Using commit_date causes "12 consecutive failures" to appear even when the
+            # most recent pipeline passed (the success happened after the commit date).
+            as_of_date            = bundle.__dict__.get("execution_date", "") or "",
+        )
+        # Map GO/CAUTION/HOLD → risk level
+        _risk_map = {"GO": "Low", "CAUTION": "Medium", "HOLD": "High"}
+        report.risk_level            = _risk_map.get(_decision.recommendation, report.risk_level)
+        report.confidence_score      = int(_decision.confidence * 100)
+        from analysis.risk_scorer import _pick_failure_step
+        _raw_step = _pick_failure_step(
+            code       = _decision.code,
+            historical = _decision.historical,
+            env        = _decision.env,
+            llm        = _decision.llm,
+            llm_step   = report.most_likely_failure_step or "",
+        )
+        # Dev pipeline passed → build + unit tests already validated.
+        # If we predicted "build" as failure step, that's proven wrong — shift to deploy/securityTest.
+        _dev_passed_flag = bundle.__dict__.get("dev_execution_status", "") == "FINISHED"
+        if _dev_passed_flag and _raw_step in ("build", "codeQuality"):
+            # Build already passed — production risk is deploy/securityTest
+            _raw_step = _decision.env.dominant_step or "deploy"
+        report.most_likely_failure_step = _raw_step
+        # Store decision on report for dashboard display
+        report.__dict__["risk_decision"] = _decision
+        report.__dict__["env_signal"]    = _decision.env
+        report.__dict__["code_signal"]   = _decision.code
+        report.__dict__["hist_signal"]   = _decision.historical
+        report.__dict__["llm_signal"]    = _decision.llm
+        # Persist code-only recommendation so build hero never shows env-blended verdict
+        try:
+            from analysis.risk_scorer import code_recommendation as _code_rec_fn
+            _cr, _cc, _cb = _code_rec_fn(_decision.code)
+            report.__dict__["_code_recommendation"]       = _cr
+            report.__dict__["_code_confidence"]           = _cc
+            report.__dict__["_code_confidence_basis"]     = _cb
+        except Exception:
+            pass
+    except Exception:
+        pass  # scorer is additive — never block output
+
+    # ── Save to SHA cache ─────────────────────────────────────────────────────
+    if commit_sha and _program_id and use_llm:
+        try:
+            from analysis.assessment_cache import save_cached
+            _consec_save = getattr(report.__dict__.get("env_signal"), "consecutive_failures", -1)
+            save_cached(_program_id, commit_sha, report.model_dump(mode="json"), _consec_save)
+        except Exception:
+            pass
+
     md = _report_to_markdown(bundle, report)
     return bundle, report, md
 
@@ -328,10 +680,17 @@ def _build_structural_reasoning(structural) -> str:
     for f in med[:2]:
         parts.append(f"② {f.title}: {f.evidence}")
 
+    # Note confidence level honestly — only javalang-confirmed findings are near-certain.
+    # Regex-only findings (LOW severity) are advisory hints, not guaranteed failures.
+    _has_certain = any(f.severity in ("CERTAIN", "HIGH") for f in structural.findings)
     parts.append(
-        "This assessment is deterministic — it is based on structural analysis of the code diff, "
-        "not probabilistic pattern matching. The findings above are certain failure conditions "
-        "unless the code is corrected before deployment."
+        "This assessment is based on structural analysis of the code diff. "
+        + (
+            "HIGH/CERTAIN severity findings are AST-confirmed and very likely to fail compilation. "
+            "LOW severity findings are heuristic hints — verify by running a local build."
+            if _has_certain else
+            "These are heuristic findings — run a local build to confirm before concluding the pipeline will fail."
+        )
     )
 
     return " ".join(parts)
@@ -412,14 +771,48 @@ def save_risk_report(
     pr_number: Optional[int] = None,
     commit_sha: Optional[str] = None,
     out_dir: str = "reports",
+    program_id: str = "",
+    customer: str = "",
 ) -> Tuple[str, str]:
+    """
+    Persist a risk report to SQLite (primary) and optionally to file (legacy fallback).
+
+    SQLite storage: keyed by (program_id, sha) — full customer isolation.
+    File storage: kept for backward-compat and local dev debugging only.
+    On Eris production: set ARGUS_DB_PATH to a persistent volume path.
+    """
+    sha = commit_sha or ""
+    pid = program_id or os.getenv("PROGRAM_ID", "unknown")
+
+    # Primary: SQLite — safe for multi-user server, customer-isolated
+    # Set ARGUS_DISABLE_CACHE=1 to skip caching during development/testing
+    if not os.getenv("ARGUS_DISABLE_CACHE"):
+        try:
+            from db.report_store import save_risk_report as _db_save
+            _report_dict = report.model_dump(mode="json")
+            _db_save(
+                program_id=pid,
+                sha=sha,
+                report_json=_report_dict,
+                md_text=markdown,
+                customer=customer,
+            )
+        except Exception as _e:
+            import warnings
+            warnings.warn(f"[report_store] SQLite write failed: {_e}", stacklevel=2)
+
+    # Legacy: file-based (kept for local dev debugging, harmless on server)
     os.makedirs(out_dir, exist_ok=True)
-    suffix = f"PR-{pr_number}" if pr_number else f"commit-{commit_sha[:8]}"
-    md_path = os.path.join(out_dir, f"risk_{suffix}.md")
+    suffix = f"PR-{pr_number}" if pr_number else f"commit-{sha[:8]}"
+    md_path   = os.path.join(out_dir, f"risk_{suffix}.md")
     json_path = os.path.join(out_dir, f"risk_{suffix}.json")
-    Path(md_path).write_text(markdown, encoding="utf-8")
-    Path(json_path).write_text(
-        json.dumps(report.model_dump(mode="json"), indent=2),
-        encoding="utf-8",
-    )
+    try:
+        Path(md_path).write_text(markdown, encoding="utf-8")
+        Path(json_path).write_text(
+            json.dumps(report.model_dump(mode="json"), indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # File write failure is non-fatal when SQLite succeeded
+
     return md_path, json_path

@@ -1,0 +1,222 @@
+{
+  "HDFC Bank": {
+    "program_id": "16360",
+    "git_url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankformsmaster/",
+    "git_username": "vanssharma-adobe-com",
+    "git_password_env": "HDFC_CM_GIT_PASSWORD",
+    "git_local_dir": "/Users/vanshika/projects/hdfcbankformsmaster",
+    "git_branch": "stage_and_prod",
+    "submodules": [
+      {
+        "name": "hdfcbankformscommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankformscommon/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankformscommon"
+      },
+      {
+        "name": "hdfcbankfdforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankfdforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankfdforms"
+      },
+      {
+        "name": "hdfcbankccforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankccforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankccforms"
+      },
+      {
+        "name": "hdfcbanketbwoccforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbanketbwoccforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbanketbwoccforms"
+      },
+      {
+        "name": "hdfcbankntbccforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankntbccforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankntbccforms"
+      },
+      {
+        "name": "hdfcbankcurrentaccountforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankcurrentaccountforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankcurrentaccountforms"
+      },
+      {
+        "name": "hdfcbankbondforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankbondforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankbondforms"
+      },
+      {
+        "name": "hdfcsavingsforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcsavingsforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcsavingsforms"
+      },
+      {
+        "name": "hdfcbankpaymentservices",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankpaymentservices/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankpaymentservices"
+      },
+      {
+        "name": "hdfcleadforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcleadforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcleadforms"
+      },
+      {
+        "name": "hdfcbankccunified",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankccunified/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankccunified"
+      },
+      {
+        "name": "hdfcbankloanforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankloanforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankloanforms"
+      },
+      {
+        "name": "hdfcbankplforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankplforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankplforms"
+      },
+      {
+        "name": "hdfcbankblforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankblforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankblforms"
+      },
+      {
+        "name": "hdfcbankalforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankalforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankalforms"
+      },
+      {
+        "name": "hdfcbanktwlforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbanktwlforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbanktwlforms"
+      },
+      {
+        "name": "hdfcofferengine",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcofferengine/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcofferengine"
+      },
+      {
+        "name": "hdfcxpresswayqr",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcxpresswayqr/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcxpresswayqr"
+      },
+      {
+        "name": "hdfcsavingscommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcsavingscommon",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcsavingscommon"
+      },
+      {
+        "name": "hdfcbankpletbforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankpletbforms/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankpletbforms"
+      },
+      {
+        "name": "hdfcbankformsssoservice",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankformsssoservice/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankformsssoservice"
+      },
+      {
+        "name": "hdfcbankassistedsavings",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankassistedsavings",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankassistedsavings"
+      },
+      {
+        "name": "hdfcformscommon-v2",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcformscommon-v2/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcformscommon-v2"
+      },
+      {
+        "name": "hdfcbankconsentmanagementcommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankconsentmanagementcommon",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankconsentmanagementcommon"
+      },
+      {
+        "name": "hdfcbanksavingsunifiedurl",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbanksavingsunifiedurl",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbanksavingsunifiedurl"
+      },
+      {
+        "name": "hdfcbanketbsavingsforms",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbanketbsavingsforms",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbanketbsavingsforms"
+      },
+      {
+        "name": "hdfcformscustomereligibility",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcformscustomereligibility/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcformscustomereligibility"
+      },
+      {
+        "name": "hdfcformsbaascommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcformsbaascommon",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcformsbaascommon"
+      },
+      {
+        "name": "hdfcformskycservice",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcformskycservice",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcformskycservice"
+      },
+      {
+        "name": "hdfcformssecurity",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcformssecurity",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcformssecurity"
+      },
+      {
+        "name": "hdfcvrmsavings",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcvrmsavings",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcvrmsavings"
+      },
+      {
+        "name": "hdfc-haf",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfc-haf/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfc-haf"
+      },
+      {
+        "name": "HDFC-HAF-CARDS",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/HDFC-HAF-CARDS/",
+        "local_dir": "/Users/vanshika/projects/submodules/HDFC-HAF-CARDS"
+      },
+      {
+        "name": "hdfcbankcustomerinfo",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankcustomerinfo",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankcustomerinfo"
+      },
+      {
+        "name": "hfdc-haf-liabilities",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hfdc-haf-liabilities/",
+        "local_dir": "/Users/vanshika/projects/submodules/hfdc-haf-liabilities"
+      },
+      {
+        "name": "hdfcLoansDashboard",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcLoansDashboard",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcLoansDashboard"
+      },
+      {
+        "name": "hdfcAssistedLoansCommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcAssistedLoansCommon",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcAssistedLoansCommon"
+      }
+    ],
+    "additional_repos": [
+      {
+        "name": "b86-hdfcformsmaster",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/b86-hdfcformsmaster/",
+        "local_dir": "/Users/vanshika/projects/b86-hdfcformsmaster"
+      }
+    ]
+  },
+  "IDFC First Bank": {
+    "program_id": "19905",
+    "git_url": "https://git.cloudmanager.adobe.com/idfc/idfc/",
+    "git_username": "vanssharma-adobe-com",
+    "git_password_env": "IDFC_CM_GIT_PASSWORD",
+    "git_local_dir": "/Users/vanshika/Downloads/idfc",
+    "git_branch": "master",
+    "submodules": []
+  },
+  "Malaysia Airlines": {
+    "program_id": "465",
+    "git_url": "https://git.cloudmanager.adobe.com/malaysiaairlines/mh-revamp/",
+    "git_username": "vanssharma-adobe-com",
+    "git_password_env": "MALASIA_CM_GIT_PASSWORD",
+    "git_local_dir": "/Users/vanshika/projects/malaysiaairlines",
+    "git_branch": "master",
+    "submodules": []
+  }
+}

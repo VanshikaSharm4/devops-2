@@ -175,7 +175,7 @@ def test_git_connector_uses_first_parent_for_merge_diff():
     calls = []
     original_git = git_connector._git
 
-    def fake_git(*args, cwd=None):
+    def fake_git(*args, cwd=None, repo_dir=None):
         calls.append(args)
         if args == ("rev-list", "--parents", "-n", "1", "merge-sha"):
             return "merge-sha parent-one parent-two\n"
@@ -303,7 +303,10 @@ def test_reactor_module_toggle_is_medium_packaging_risk():
     assert infer_failure_modes(profile, diff) == ["deployment_ordering_issue"]
     assert scores.build == "LOW"
     assert scores.deploy == "MEDIUM"
-    assert scores.securityTest == "HIGH"
+    # securityTest is LOW — pom.xml reactor toggle has no security-relevant files.
+    # Historical securityTest failures on this pipeline are CRXDE/DavEx env issues,
+    # not caused by this commit. The prior is intentionally not applied here.
+    assert scores.securityTest == "LOW"
 
 
 def test_post_failure_assessment_stage1_offline():

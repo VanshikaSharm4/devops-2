@@ -58,13 +58,55 @@ def _cache_exists(program_id: Optional[int] = None) -> bool:
     return _cache_file(program_id).exists()
 
 
+def normalize_pipeline_df(pipeline_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per executionId. Splunk exports can repeat the same execution many
+    times (event fan-out) — without deduping, env consecutive-failure counts inflate.
+    """
+    if pipeline_df is None or pipeline_df.empty or "executionId" not in pipeline_df.columns:
+        return pipeline_df
+    df = pipeline_df.copy()
+    df["executionId"] = df["executionId"].astype(str)
+    # keep="last" by Deploy Start Time so a re-queried execution with updated
+    # status (e.g. RUNNING→FINISHED) overwrites the stale row, not vice versa.
+    if "Deploy Start Time" in df.columns:
+        df = df.sort_values("Deploy Start Time", ascending=True, na_position="first")
+    return df.drop_duplicates(subset=["executionId"], keep="last")
+
+
+def normalize_failed_steps_df(failed_steps_df: pd.DataFrame) -> pd.DataFrame:
+    """One failed-step row per executionId — keep last to get final status."""
+    if failed_steps_df is None or failed_steps_df.empty or "executionId" not in failed_steps_df.columns:
+        return failed_steps_df
+    df = failed_steps_df.copy()
+    df["executionId"] = df["executionId"].astype(str)
+    return df.drop_duplicates(subset=["executionId"], keep="last")
+
+
+def _normalize_splunk_frames(
+    pipeline_df: pd.DataFrame,
+    failed_df: pd.DataFrame,
+    failed_steps_df: pd.DataFrame,
+    share_map: Dict[str, str],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    pipeline_df = normalize_pipeline_df(pipeline_df)
+    failed_steps_df = normalize_failed_steps_df(failed_steps_df)
+    if failed_df is not None and not failed_df.empty and "executionId" in failed_df.columns:
+        failed_df = failed_df.copy()
+        failed_df["executionId"] = failed_df["executionId"].astype(str)
+        failed_df = failed_df.drop_duplicates(subset=["executionId"], keep="last")
+    return pipeline_df, failed_df, failed_steps_df, share_map
+
+
 def _load_cache(program_id: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     cf = _cache_file(program_id)
     with open(cf, "rb") as f:
         data = pickle.load(f)
     age = round((time.time() - cf.stat().st_mtime) / 60, 1)
     print(f"  [ingest] Loaded from disk cache (age: {age} min, TTL: {CACHE_TTL_MIN} min)")
-    return data["pipeline_df"], data["failed_df"], data["failed_steps_df"], data["share_map"]
+    return _normalize_splunk_frames(
+        data["pipeline_df"], data["failed_df"], data["failed_steps_df"], data["share_map"]
+    )
 
 
 def _save_cache(
@@ -111,11 +153,14 @@ def cache_info() -> dict:
 
 def load_live_data(
     program_id: Optional[int] = None,
+    skip_share_names: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     """
-    Fetch all three datasets from Splunk REST API in PARALLEL.
-    All three jobs are submitted simultaneously — total time ≈ slowest single query
-    instead of sum of all three.
+    Fetch pipeline and failure data from Splunk REST API in PARALLEL.
+
+    skip_share_names=True: skip the Azure share names query (used during risk
+    assessment where log URLs aren't needed — saves ~3-8s per fetch).
+    Share names are only needed for the Failure Pinpoint log download feature.
     """
     from connectors.splunk_connector import (
         fetch_failed_steps,
@@ -125,21 +170,23 @@ def load_live_data(
 
     pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
 
-    # Submit all 3 Splunk jobs at the same time
+    # Submit pipeline + failed steps in parallel.
+    # Azure share names are optional — skip during risk assessment to save time.
     with ThreadPoolExecutor(max_workers=3) as pool:
         future_pipeline = pool.submit(fetch_pipeline_list, pid)
         future_failed   = pool.submit(fetch_failed_steps,  pid)
-        future_shares   = pool.submit(fetch_share_names,   pid)
+        future_shares   = (
+            None if skip_share_names
+            else pool.submit(fetch_share_names, pid)
+        )
 
-        # Collect results — raises if any query failed
         pipeline_df     = future_pipeline.result()
         failed_steps_df = future_failed.result()
-        share_names_dict = future_shares.result()
+        share_names_dict = {} if future_shares is None else future_shares.result()
 
     failed_df = get_failed_executions(pipeline_df, failed_steps_df)
-    # Keep ALL share names (not just failed) — we may want logs for any execution
     share_map = {str(eid): str(sname) for eid, sname in share_names_dict.items()}
-    return pipeline_df, failed_df, failed_steps_df, share_map
+    return _normalize_splunk_frames(pipeline_df, failed_df, failed_steps_df, share_map)
 
 
 def load_csv_data(
@@ -159,34 +206,59 @@ def load_csv_data(
     failed_df       = get_failed_executions(pipeline_df, failed_steps_df)
     all_share_names = load_share_names(share_names_csv)
     share_map       = build_failed_share_map(all_share_names, failed_steps_df)
-    return pipeline_df, failed_df, failed_steps_df, share_map
+    return _normalize_splunk_frames(pipeline_df, failed_df, failed_steps_df, share_map)
 
 
 def load_data(
     program_id: Optional[int] = None,
     force_csv: bool = False,
     force_refresh: bool = False,
+    skip_share_names: bool = True,
+    stale_while_revalidate: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     """
-    Smart loader with disk cache:
-      1. Cache fresh?  → load from disk instantly (share_map included)
-      2. Splunk creds? → fetch live, save to disk cache
-      3. Otherwise     → stale disk cache (no CSV fallback — CSV share names are expired)
+    Smart loader with stale-while-revalidate:
+      1. Cache fresh?   → return instantly from disk
+      2. Cache stale?   → return stale data NOW + trigger background refresh
+      3. No cache?      → fetch live (blocks until complete)
+      4. Splunk down?   → use stale cache silently
 
-    Share names come from live Splunk or the pickle cache only.
-    The old share-names.csv is NOT used — those shares have expired.
-    force_refresh=True skips the cache and re-fetches from Splunk.
-    Override cache TTL with env var: SPLUNK_CACHE_TTL_MINUTES (default 30).
+    skip_share_names=True (default): skip Azure share names fetch during risk
+    assessment — they're only needed for Failure Pinpoint log downloads.
+    Saves 3-8s per cold fetch.
+
+    stale_while_revalidate=True (default): return stale cache immediately,
+    refresh in background. Developer sees results instantly; fresh data on
+    next assessment.
     """
     pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
 
     if not force_csv and _use_splunk_api():
         if not force_refresh and _cache_is_fresh(pid):
+            print(f"  [ingest] Loaded from disk cache (fresh)")
             return _load_cache(pid)
 
-        print("  [ingest] Fetching from Splunk (3 parallel queries)...")
+        # Stale cache exists — return it immediately and refresh in background
+        if stale_while_revalidate and _cache_exists(pid):
+            import threading as _threading
+
+            def _bg_refresh():
+                try:
+                    result = load_live_data(pid, skip_share_names=skip_share_names)
+                    _save_cache(*result, program_id=pid)
+                    print(f"  [ingest] Background refresh complete for program {pid}")
+                except Exception as _e:
+                    print(f"  [ingest] Background refresh failed: {_e}")
+
+            _t = _threading.Thread(target=_bg_refresh, daemon=True)
+            _t.start()
+            print(f"  [ingest] Returning stale cache, refreshing in background…")
+            return _load_cache(pid)
+
+        # No cache — must fetch synchronously
+        print(f"  [ingest] Fetching from Splunk ({'2 queries — skipping share names' if skip_share_names else '3 parallel queries'})…")
         try:
-            result = load_live_data(pid)
+            result = load_live_data(pid, skip_share_names=skip_share_names)
             _save_cache(*result, program_id=pid)
             return result
         except Exception as live_err:
@@ -200,15 +272,15 @@ def load_data(
             except Exception:
                 pass
             if _cache_exists(pid):
-                print("  [ingest] Falling back to stale disk cache...")
+                print("  [ingest] Falling back to stale disk cache…")
                 return _load_cache(pid)
-            print("  [ingest] No cache — loading pipeline data from CSV, share_map empty...")
+            print("  [ingest] No cache — loading from CSV, share_map empty…")
             pdf, fdf, fsteps, _ = load_csv_data()
             return pdf, fdf, fsteps, {}
     else:
         if _cache_exists(pid):
             return _load_cache(pid)
-        print("  [ingest] Using CSV exports (no Splunk creds, no cache)...")
+        print("  [ingest] Using CSV exports (no Splunk creds, no cache)…")
         pdf, fdf, fsteps, _ = load_csv_data()
         return pdf, fdf, fsteps, {}
 
@@ -303,7 +375,11 @@ def build_base_bundle(
     """Build AnalysisBundle — uses live Splunk API when credentials available, else CSVs."""
     from analysis.failure_history import build_failure_history
 
-    pipeline_df, failed_df, _, share_map = load_data(force_csv=force_csv)
+    pid = os.getenv("PROGRAM_ID", "")
+    pipeline_df, failed_df, _, share_map = load_data(
+        program_id=int(pid) if pid else None,
+        force_csv=force_csv,
+    )
     summary = build_execution_summary(pipeline_df)
     patterns = summarize_failures(failed_df)
     error_details = collect_error_details(failed_df, share_map, fetch_logs=fetch_logs)

@@ -27,7 +27,7 @@ TENANT_ENV = {
     "malaysia":("MALASIA_TOKEN","MALASIA_KEY","MALASIA_CLIENT_SECRET","4D9676A8531512ED0A490D44@AdobeOrg"),
 }
 
-DEFAULT_TENANT = os.getenv("ML_TENANT_ID", "idfc")
+DEFAULT_TENANT = os.getenv("CM_TENANT_ID", "idfc")
 
 # In-memory token cache: tenant_id → {"token": str, "expires_at": float}
 _token_cache: Dict[str, Dict] = {}

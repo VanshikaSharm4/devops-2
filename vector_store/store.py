@@ -87,8 +87,19 @@ def store_failure(
         **(extra_meta or {}),
     }
 
+    # Enforce tenant tag — records without a verified tenant cannot be stored.
+    # This prevents the "untagged record leaks to all customers" bug.
+    _tid = metadata.get("tenant_id", "") or metadata.get("program_id", "")
+    if not _tid or _tid in ("unverified", "unknown"):
+        import warnings
+        warnings.warn(
+            f"store_failure called without tenant_id/program_id for execution {execution_id}. "
+            f"Record NOT stored — all ChromaDB records must be tenant-tagged.",
+            stacklevel=2,
+        )
+        return doc_id  # skip storage, return doc_id for caller compatibility
+
     col = _collection("failure_memory")
-    # upsert = insert or replace if same doc_id
     col.upsert(
         ids=[doc_id],
         documents=[embed_text],
@@ -138,14 +149,17 @@ def find_similar_failures(
     top_k: int = 3,
     include_risk_predictions: bool = False,
     pipeline: str = "",
+    tenant_id: str = "",
+    program_id: str = "",
 ) -> list[dict]:
     """
     Query the failure memory for the most similar past incidents.
 
-    If `pipeline` is provided, only records from that same pipeline are
-    returned — Dev-pipeline failures never bleed into Production Pipeline
-    predictions and vice versa. Records with no pipeline tag are included
-    (legacy data / pinpoint reports).
+    Tenant isolation (P0 for Adobe enterprise):
+    - If tenant_id or program_id provided, only records from that tenant are
+      returned. IDFC failures must never influence HDFC predictions.
+    - Pipeline filter is applied within the tenant scope.
+    - Records with no tenant tag are included for backward compat (legacy data).
 
     Returns list of dicts with keys: execution_id, step, error_type,
     error_message, root_cause, fix, similarity_score.
@@ -161,15 +175,44 @@ def find_similar_failures(
 
     n_results = min(max(top_k * 5, top_k), col.count())
 
-    # Build ChromaDB where filter: match same pipeline OR untagged records
-    where_filter: Optional[dict] = None
+    # Build ChromaDB where filter — tenant isolation is the outermost constraint
+    conditions = []
+
+    # Tenant isolation — strict: only this tenant's records.
+    # 'unverified' records have unknown origin and must NEVER be served to any tenant.
+    # Empty/untagged records are also blocked when a tenant is specified.
+    _tenant = tenant_id or program_id
+    if _tenant:
+        # Only return records explicitly tagged for this tenant
+        conditions.append({
+            "$or": [
+                {"tenant_id":  {"$eq": _tenant}},
+                {"program_id": {"$eq": _tenant}},
+            ]
+        })
+    else:
+        # No tenant specified (admin/global) — still exclude unverified records
+        conditions.append({
+            "$and": [
+                {"tenant_id": {"$ne": "unverified"}},
+                {"program_id": {"$ne": "unverified"}},
+            ]
+        })
+
+    # Pipeline isolation within tenant
     if pipeline:
-        where_filter = {
+        conditions.append({
             "$or": [
                 {"pipeline": {"$eq": pipeline}},
                 {"pipeline": {"$eq": ""}},
             ]
-        }
+        })
+
+    where_filter = None
+    if len(conditions) == 1:
+        where_filter = conditions[0]
+    elif len(conditions) > 1:
+        where_filter = {"$and": conditions}
 
     results = col.query(
         query_texts=[query],
@@ -179,15 +222,36 @@ def find_similar_failures(
     )
 
     hits = []
+    seen_fingerprints: list = []
+
+    def _rc_fingerprint(text: str) -> str:
+        """Short fingerprint of root cause to detect near-duplicate records."""
+        import re as _re_fp
+        words = _re_fp.findall(r'\b[a-z]{5,}\b', (text or "").lower())
+        top = sorted(set(words), key=words.count, reverse=True)[:5]
+        return " ".join(sorted(top))
+
     for meta, dist in zip(
         results["metadatas"][0],
         results["distances"][0],
     ):
         if not include_risk_predictions and _is_risk_prediction_meta(meta):
             continue
-        similarity = round(1 - dist, 3)   # cosine distance → similarity score
-        if similarity < 0.3:              # skip low-relevance matches
+        similarity = round(1 - dist, 3)
+        if similarity < 0.3:
             continue
+
+        # Deduplicate near-identical root causes at query time
+        # This prevents 5 records all saying "dispatcher address not specified"
+        fp = _rc_fingerprint(meta.get("root_cause", "") + " " + meta.get("step", ""))
+        is_dup = any(
+            sum(1 for w in fp.split() if w in seen_fp.split()) / max(len(fp.split()), 1) > 0.6
+            for seen_fp in seen_fingerprints
+        )
+        if is_dup:
+            continue
+        seen_fingerprints.append(fp)
+
         hits.append({**meta, "similarity_score": similarity})
         if len(hits) >= top_k:
             break
@@ -240,7 +304,7 @@ def purge_risk_prediction_records() -> int:
 
 # ── Bulk ingest from existing reports ────────────────────────────────────────
 
-def ingest_failure_report(report: Any, pipeline_name: str = "") -> int:
+def ingest_failure_report(report: Any, pipeline_name: str = "", tenant_id: str = "", program_id: str = "") -> int:
     """
     Ingest a FailureReport (Pydantic model) into the vector store.
     Stores every critical + recurring finding.
@@ -252,6 +316,8 @@ def ingest_failure_report(report: Any, pipeline_name: str = "") -> int:
 
     Returns number of records stored.
     """
+    _pid = program_id or str(getattr(report, "program_id", ""))
+    _tid = tenant_id or _pid
     count = 0
     findings = list(getattr(report, "critical_findings", []) or []) + \
                list(getattr(report, "recurring_findings", []) or [])
@@ -265,13 +331,16 @@ def ingest_failure_report(report: Any, pipeline_name: str = "") -> int:
             root_cause=getattr(f, "root_cause", ""),
             fix=getattr(f, "recommended_fix", ""),
             pipeline=pipeline_name,  # actual pipeline name, not program_id
+            extra_meta={"tenant_id": _tid, "program_id": _pid} if _pid or _tid else None,
         )
         count += 1
     return count
 
 
-def ingest_pinpoint_report(report: Any) -> str:
+def ingest_pinpoint_report(report: Any, tenant_id: str = "", program_id: str = "") -> str:
     """Ingest a PinpointReport into the vector store."""
+    _pid = program_id or str(getattr(report, "program_id", ""))
+    _tid = tenant_id or _pid
     return store_failure(
         execution_id=getattr(report, "execution_id", "unknown"),
         step=getattr(report, "failed_step", ""),
@@ -280,6 +349,7 @@ def ingest_pinpoint_report(report: Any) -> str:
         key_lines=[],
         root_cause=getattr(report, "explanation", ""),
         fix=f"{getattr(report, 'fix_after', '') or getattr(report, 'prevention', '')}",
+        extra_meta={"tenant_id": _tid, "program_id": _pid} if _pid or _tid else None,
     )
 
 
@@ -352,6 +422,8 @@ def ingest_live_failures(
     share_map: dict,
     pipeline_name: str = "",
     max_per_run: int = 20,
+    tenant_id: str = "",
+    program_id: str = "",
 ) -> int:
     """
     For every failure in failed_df that has an Azure share and hasn't been
@@ -422,19 +494,23 @@ def ingest_live_failures(
             f"log lines: {' | '.join(key_lines[:8])}"
         )
 
+        _meta: dict = {
+            "execution_id":  eid,
+            "step":          step,
+            "error_type":    error_type,
+            "error_message": error_message[:500],
+            "root_cause":    f"{pname} {step} failed: {error_message[:200]}",
+            "fix":           f"Check {step} logs for execution {eid}",
+            "pipeline":      pname,
+            "source":        "live_log",
+        }
+        if tenant_id or program_id:
+            _meta["tenant_id"]  = tenant_id or program_id
+            _meta["program_id"] = program_id or tenant_id
         col.upsert(
             ids=[doc_id],
             documents=[embed_text],
-            metadatas=[{
-                "execution_id":  eid,
-                "step":          step,
-                "error_type":    error_type,
-                "error_message": error_message[:500],
-                "root_cause":    f"{pname} {step} failed: {error_message[:200]}",
-                "fix":           f"Check {step} logs for execution {eid}",
-                "pipeline":      pname,
-                "source":        "live_log",
-            }],
+            metadatas=[_meta],
         )
         stored += 1
 

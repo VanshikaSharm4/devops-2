@@ -24,19 +24,53 @@ from openpyxl.utils import get_column_letter
 from connectors.git_connector import correlate_executions_to_commits
 from analysis.risk_analyzer import run_pre_deploy_risk
 
+def _load_customer_config() -> dict:
+    """Load customer_config.json and merge secrets for git credentials."""
+    import json
+    cfg_path = os.path.join(PROJECT_ROOT, "data/customer_config.json")
+    sec_path = os.path.join(PROJECT_ROOT, "data/.secrets.json")
+    try:
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    try:
+        with open(sec_path) as f:
+            sec = json.load(f)
+    except Exception:
+        sec = {}
+    # Merge git_password into cfg
+    for name in cfg:
+        cfg[name]["git_password"] = sec.get(name, {}).get("git_password", "")
+    return cfg
+
+_CUST_CFG = _load_customer_config()
+
+def _cust(short_name: str, program_id: str, cache_name: str, git_dir: str, branch: str) -> dict:
+    """Build customer entry, pulling git_url + credentials from customer_config."""
+    # Find matching config entry by program_id
+    entry = next(
+        (v for v in _CUST_CFG.values() if str(v.get("program_id", "")) == program_id),
+        {}
+    )
+    return {
+        "name": short_name,
+        "program_id": program_id,
+        "cache_path": os.path.join(PROJECT_ROOT, f"data/cache/{cache_name}"),
+        "git_dir": git_dir,
+        "branch": branch,
+        "git_url":      entry.get("git_url", ""),
+        "git_username": entry.get("git_username", ""),
+        "git_password": entry.get("git_password", ""),
+    }
+
 CUSTOMERS = [
-    {
-        "name": "HDFC",
-        "program_id": "16360",
-        "cache_path": os.path.join(PROJECT_ROOT, "data/cache/splunk_cache_16360.pkl"),
-        "git_dir": "/Users/vanshika/projects/hdfcbankformsmaster",
-    },
-    {
-        "name": "IDFC",
-        "program_id": "19905",
-        "cache_path": os.path.join(PROJECT_ROOT, "data/cache/splunk_cache_19905.pkl"),
-        "git_dir": "/Users/vanshika/Downloads/idfc",
-    },
+    _cust("HDFC",    "16360", "splunk_cache_16360.pkl",
+          "/Users/vanshika/projects/hdfcbankformsmaster", "origin/stage_and_prod"),
+    _cust("IDFC",    "19905", "splunk_cache_19905.pkl",
+          "/Users/vanshika/Downloads/idfc", "master"),
+    _cust("Malaysia", "465",  "splunk_cache_465.pkl",
+          "/Users/vanshika/projects/malaysiaairlines", "master"),
 ]
 
 MAX_EXECUTIONS = 20
@@ -72,15 +106,31 @@ def get_completed_executions(cache):
     return completed
 
 
-def determine_correctness(predicted_risk, actual_status, predicted_step, actual_failed_step):
-    """Returns (correct, step_correct)."""
+def determine_correctness(predicted_risk, actual_status, predicted_step, actual_failed_step,
+                          sha_worst_status=None):
+    """
+    Returns (correct, step_correct).
+
+    sha_worst_status: the worst outcome for this SHA across ALL pipeline runs.
+    If a SHA failed on ANY pipeline, predicting failure is correct — even if this
+    particular execution (on a different pipeline) passed. This prevents penalizing
+    correct predictions when the same SHA ran on multiple pipelines with different outcomes.
+    """
     risk_lower = str(predicted_risk).lower() if predicted_risk else ""
     status_upper = str(actual_status).upper() if actual_status else ""
 
-    if risk_lower == "low" and status_upper == "FINISHED":
+    # Use worst outcome across pipelines for this SHA, if available
+    effective_status = sha_worst_status or status_upper
+
+    if risk_lower == "low" and effective_status == "FINISHED":
         correct = True
-    elif risk_lower in ("high", "medium") and status_upper in ("FAILED", "ERROR"):
+    elif risk_lower in ("high", "medium") and effective_status in ("FAILED", "ERROR"):
         correct = True
+    elif risk_lower == "low" and effective_status in ("FAILED", "ERROR"):
+        correct = False  # false negative — predicted safe but SHA failed somewhere
+    elif risk_lower in ("high", "medium") and effective_status == "FINISHED":
+        # False positive only if SHA NEVER failed on any pipeline
+        correct = False
     else:
         correct = False
 
@@ -142,9 +192,13 @@ def run_evaluation():
         print(f"Processing customer: {name} (program {program_id})")
         print(f"{'='*60}")
 
-        # Set env vars
-        os.environ["PROGRAM_ID"] = program_id
-        os.environ["GIT_LOCAL_DIR"] = git_dir
+        # Set env vars — must include customer-specific git URL so clone_or_update()
+        # fetches from the correct remote (not the IDFC URL hardcoded in .env)
+        os.environ["PROGRAM_ID"]       = program_id
+        os.environ["GIT_LOCAL_DIR"]    = git_dir
+        os.environ["CM_GIT_REPO_URL"]  = customer.get("git_url", "")
+        os.environ["CM_GIT_USERNAME"]  = customer.get("git_username", "")
+        os.environ["CM_GIT_PASSWORD"]  = customer.get("git_password", "")
 
         # Load cache
         try:
@@ -177,28 +231,66 @@ def run_evaluation():
         # Build execution rows for correlation
         execution_rows = sample[["executionId", "Deploy Start Time"]].to_dict("records")
 
-        # Correlate to commits
-        print(f"  Correlating executions to commits (git dir: {git_dir})...")
+        # Correlate to commits — use customer-specific branch
+        branch = customer.get("branch", "master")
+        print(f"  Correlating executions to commits (git dir: {git_dir}, branch: {branch})...")
         try:
-            sha_map = correlate_executions_to_commits(execution_rows)
+            sha_map = correlate_executions_to_commits(execution_rows, branch=branch)
         except Exception as e:
             print(f"  ERROR correlating commits: {e}")
             sha_map = {}
 
         print(f"  Correlated {len(sha_map)} / {len(sample)} executions to SHAs")
 
+        # Skip customer entirely if 0 correlations — likely wrong/stale Splunk cache
+        # (e.g. Malaysia cache contains IDFC execution IDs — nothing can be evaluated)
+        if len(sha_map) == 0:
+            print(f"  SKIP: 0 SHAs correlated for {name} — Splunk cache may contain wrong customer data.")
+            print(f"  Hint: Delete data/cache/splunk_cache_{program_id}.pkl and re-fetch from Splunk.")
+            continue
+
+        # Build SHA → worst outcome map for pipeline-aware correctness scoring.
+        # A SHA that failed on ProdOnly but passed on StageOnly should count as
+        # a failure prediction being correct, not a false positive on the StageOnly run.
+        _sha_to_worst: dict = {}
+        for _, _r in sample.iterrows():
+            _eid = str(_r["executionId"])
+            _corr = sha_map.get(_eid, {})
+            _sha = _corr.get("sha") if _corr else None
+            if not _sha:
+                continue
+            _st = str(_r["Status"]).upper()
+            current = _sha_to_worst.get(_sha, "FINISHED")
+            # FAILED/ERROR beats FINISHED
+            if _st in ("FAILED", "ERROR"):
+                _sha_to_worst[_sha] = _st
+            elif current not in ("FAILED", "ERROR"):
+                _sha_to_worst[_sha] = _st
+
         # Evaluate each execution
+        import math
         for _, row in sample.iterrows():
             exec_id = str(row["executionId"])
             actual_status = row["Status"]
             actual_failed_step_raw = row.get("firstFailedStep", None)
             # Guard against NaN from pandas merge
-            import math
             if actual_failed_step_raw is None or (isinstance(actual_failed_step_raw, float) and math.isnan(actual_failed_step_raw)):
                 actual_failed_step = None
             else:
                 actual_failed_step = str(actual_failed_step_raw)
             pipeline_name = row.get("pipelineName", "")
+            # as_of_date: use the execution's deploy date so env assessment
+            # reflects the env state at the time of this run, not today
+            exec_date_raw = row.get("Deploy Start Time", "")
+            as_of_date_str = ""
+            if exec_date_raw:
+                try:
+                    import re as _re
+                    # Strip timezone suffix, take date portion only
+                    _clean = _re.sub(r'\s*(PDT|PST|UTC|GMT)$', '', str(exec_date_raw)).strip()
+                    as_of_date_str = str(pd.to_datetime(_clean).date())
+                except Exception:
+                    pass
 
             corr = sha_map.get(exec_id, {})
             commit_sha = corr.get("sha") if corr else None
@@ -207,6 +299,7 @@ def run_evaluation():
                 print(f"  [{exec_id}] No SHA correlation, skipping")
                 continue
 
+            sha_worst = _sha_to_worst.get(commit_sha, actual_status).upper()
             print(f"  [{exec_id}] SHA={commit_sha[:8]}  status={actual_status}  pipeline={pipeline_name}")
 
             result_row = {
@@ -215,6 +308,7 @@ def run_evaluation():
                 "commit_sha": commit_sha,
                 "pipeline_name": pipeline_name,
                 "actual_status": actual_status,
+                "sha_worst_status": sha_worst,
                 "actual_failed_step": actual_failed_step or "",
                 "predicted_risk": "",
                 "predicted_step": "",
@@ -230,6 +324,8 @@ def run_evaluation():
                     commit_sha=commit_sha,
                     fetch_logs=False,
                     use_llm=True,
+                    as_of_date=as_of_date_str or None,
+                    pipeline_name=pipeline_name or None,
                 )
 
                 if report:
@@ -238,7 +334,8 @@ def run_evaluation():
                     confidence = report.confidence_score
 
                     correct, step_correct = determine_correctness(
-                        predicted_risk, actual_status, predicted_step, actual_failed_step
+                        predicted_risk, actual_status, predicted_step, actual_failed_step,
+                        sha_worst_status=sha_worst,
                     )
 
                     result_row.update({
@@ -275,13 +372,15 @@ def compute_summary(rows):
 
     correct_count = sum(1 for r in evaluated if r["correct"] is True)
 
-    # False negatives: predicted Low but actual FAILED/ERROR
-    actual_failures = [r for r in evaluated if r["actual_status"] in ("FAILED", "ERROR")]
+    # False negatives: predicted Low but SHA actually failed (on any pipeline)
+    # Use sha_worst_status so that if a SHA failed on ONE pipeline, it counts as a real failure
+    actual_failures = [r for r in evaluated if r.get("sha_worst_status", r["actual_status"]) in ("FAILED", "ERROR")]
     false_negatives = [r for r in actual_failures if str(r["predicted_risk"]).lower() == "low"]
     fn_rate = len(false_negatives) / len(actual_failures) if actual_failures else 0
 
-    # False positives: predicted High/Med but actual FINISHED
-    actual_successes = [r for r in evaluated if r["actual_status"] == "FINISHED"]
+    # False positives: predicted High/Med but SHA NEVER failed on any pipeline
+    # Only count as FP when the SHA passed on ALL pipelines (sha_worst_status == FINISHED)
+    actual_successes = [r for r in evaluated if r.get("sha_worst_status", r["actual_status"]) == "FINISHED"]
     false_positives = [r for r in actual_successes if str(r["predicted_risk"]).lower() in ("high", "medium")]
     fp_rate = len(false_positives) / len(actual_successes) if actual_successes else 0
 
@@ -333,7 +432,7 @@ def write_excel(rows, summary, improvement_signals, output_path):
 
     columns = [
         "customer", "executionId", "commit_sha", "pipeline_name",
-        "actual_status", "actual_failed_step",
+        "actual_status", "sha_worst_status", "actual_failed_step",
         "predicted_risk", "predicted_step", "confidence",
         "correct", "step_correct", "rationale", "error"
     ]

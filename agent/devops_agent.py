@@ -42,7 +42,7 @@ class LLMCallConfig:
 # Tuned per feature
 CONFIGS: dict[str, LLMCallConfig] = {
     "report":    LLMCallConfig(max_tokens=4096, temperature=0.3, json_mode=True),
-    "risk":      LLMCallConfig(max_tokens=4096, temperature=0.1, json_mode=True),
+    "risk":      LLMCallConfig(max_tokens=3072, temperature=0.1, json_mode=True),
     "compare":   LLMCallConfig(max_tokens=2048, temperature=0.1, json_mode=True),
     "correlate": LLMCallConfig(max_tokens=2048, temperature=0.1, json_mode=True),
     "scan":      LLMCallConfig(max_tokens=3072, temperature=0.1, json_mode=True),
@@ -189,19 +189,21 @@ def _call_azure_openai(system: str, user_message: str, cfg: LLMCallConfig) -> st
     # json_object mode forces valid JSON — only supported by Azure OpenAI
     if cfg.json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    response = client.chat.completions.create(**kwargs)
+    response = client.chat.completions.create(**kwargs, timeout=90)
     return response.choices[0].message.content
 
 
 def _call_llm(system: str, user_message: str, cfg: LLMCallConfig) -> str:
     print(f"  [{LLM_PROVIDER}] max_tokens={cfg.max_tokens} temp={cfg.temperature} json={cfg.json_mode}")
-    if LLM_PROVIDER == "anthropic":
-        return _call_anthropic(system, user_message, cfg)
-    if LLM_PROVIDER == "gemini":
-        return _call_gemini(system, user_message, cfg)
-    if LLM_PROVIDER == "azure_openai":
-        return _call_azure_openai(system, user_message, cfg)
-    raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+    from analysis.llm_semaphore import llm_slot
+    with llm_slot(LLM_PROVIDER):
+        if LLM_PROVIDER == "anthropic":
+            return _call_anthropic(system, user_message, cfg)
+        if LLM_PROVIDER == "gemini":
+            return _call_gemini(system, user_message, cfg)
+        if LLM_PROVIDER == "azure_openai":
+            return _call_azure_openai(system, user_message, cfg)
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
 
 
 # ── Core structured runner ────────────────────────────────────────────────────
@@ -213,6 +215,7 @@ def _enrich_with_memory(
     key_lines: list,
     step: str = "",
     pipeline: str = "",
+    context: Optional[dict] = None,
 ) -> str:
     """
     Query the vector store for similar past failures and prepend them
@@ -220,9 +223,13 @@ def _enrich_with_memory(
     Silently skips if vector store is unavailable or empty.
     Only returns records from the same pipeline — prevents Dev-pipeline
     failures bleeding into Production Pipeline predictions.
+    Tenant isolation: pass context with tenant_id/program_id to restrict results
+    to the current customer and prevent cross-tenant contamination.
     """
     try:
         from vector_store.store import find_similar_failures
+        _ctx = context or {}
+        _tenant = _ctx.get("tenant_id", "") or _ctx.get("program_id", "")
         hits = find_similar_failures(
             error_type=error_type,
             error_message=error_message,
@@ -230,6 +237,7 @@ def _enrich_with_memory(
             step=step,
             top_k=3,
             pipeline=pipeline,
+            tenant_id=_tenant,
         )
         if not hits:
             return user_message
@@ -428,33 +436,38 @@ def _enrich_risk_with_memory(user_message: str, context: dict) -> str:
 
         query_text = "\n".join(query_parts)
 
-        # Steps to query — check all Production-relevant steps
-        steps_to_query = ["securityTest", "build", "deploy"]
+        # Steps to query — only include securityTest when it's NOT the dominant env failure.
+        # When securityTest is the dominant failing step in Splunk (is_env_issue=True),
+        # those ChromaDB records are all env-caused failures (CRXDE/DavEx active), not
+        # commit-caused. Including them contaminates the similarity search — the LLM sees
+        # "3 similar commits, all failed at securityTest" and concludes this commit will too,
+        # even when the commit has nothing to do with those failures.
+        # Only query securityTest when the commit has dispatcher/security config changes that
+        # could plausibly cause securityTest failures.
+        _env_readiness  = context.get("environment_readiness") or {}
+        _env_dominant   = _env_readiness.get("dominant_step", "")
+        _env_is_issue   = _env_readiness.get("is_env_issue", False)
+        _has_dispatcher = any(
+            k in " ".join(changed_files).lower()
+            for k in ("dispatcher", ".any", ".vhost", ".farm", "ui.config", "security",
+                      "auth", "acl", "oauth", "crxde")
+        )
+        # Skip securityTest ChromaDB query when commit has no security-relevant files.
+        # Historical securityTest failures are env-caused (CRXDE/DavEx) — showing them
+        # for test-only or core-Java commits misleads the LLM into predicting securityTest failures.
+        _skip_security_test = not _has_dispatcher
+        steps_to_query = [
+            s for s in ["securityTest", "build", "deploy"]
+            if not (s == "securityTest" and _skip_security_test)
+        ]
 
         seen_ids: set = set()
         all_hits: list = []
 
-        # Try new enriched ChromaDB first (has environment filter)
+        _tenant = context.get("tenant_id", "") or context.get("program_id", "")
         try:
-            import sys
-            from pathlib import Path
-            ml_path = str(Path(__file__).resolve().parents[2] / "devops-risk-ml")
-            if ml_path not in sys.path:
-                sys.path.insert(0, ml_path)
-            from etl.chroma_ingest import query_similar
-
-            for step in steps_to_query:
-                hits = query_similar(
-                    step=step,
-                    environment="prod",
-                    query_text=query_text,
-                    top_k=3,
-                )
-                for h in hits:
-                    uid = h.get("execution_id", "") + h.get("step", "")
-                    if uid not in seen_ids:
-                        seen_ids.add(uid)
-                        all_hits.append(h)
+            # devops-risk-ml project not active — fall through to vector_store directly
+            raise ImportError("devops-risk-ml not in use")
         except Exception:
             # Fall back to existing store if ML project not available
             from vector_store.store import find_similar_failures
@@ -467,6 +480,7 @@ def _enrich_risk_with_memory(user_message: str, context: dict) -> str:
                     step=step,
                     top_k=3,
                     pipeline=pipeline_name,
+                    tenant_id=_tenant,
                 )
                 for h in hits:
                     uid = h.get("execution_id", "") + h.get("step", "")
@@ -541,6 +555,72 @@ def _enrich_risk_with_memory(user_message: str, context: dict) -> str:
         return user_message   # vector store is optional — never crash the main flow
 
 
+def _enrich_risk_with_memory_with_hits(user_message: str, context: dict):
+    """
+    Same as _enrich_risk_with_memory but also returns the raw hits list.
+    Returns (enriched_message, hits_list).
+    """
+    try:
+        commit_profile = context.get("commit_profile") or {}
+        changed_files  = commit_profile.get("changed_files") or []
+        modules        = commit_profile.get("modules_touched") or []
+
+        if not changed_files and not modules:
+            return user_message, []
+
+        query_parts = []
+        if modules:
+            query_parts.append("modules_touched: " + " ".join(modules[:6]))
+        if changed_files:
+            risky = [f for f in changed_files if any(
+                k in f for k in ("pom.xml", "dispatcher", "ui.config", "package.json", ".any", ".vhost")
+            )]
+            query_parts.append("key_files: " + " ".join((risky or changed_files)[:5]))
+
+        query_text     = "\n".join(query_parts)
+        # Same securityTest filter as _enrich_risk_with_memory — avoid contamination
+        # from env-caused securityTest failures polluting commit risk predictions
+        _env_readiness2 = context.get("environment_readiness") or {}
+        _env_dominant2  = _env_readiness2.get("dominant_step", "")
+        _env_is_issue2  = _env_readiness2.get("is_env_issue", False)
+        _has_dispatcher2 = any(
+            k in " ".join(changed_files).lower()
+            for k in ("dispatcher", ".any", ".vhost", ".farm", "ui.config", "security",
+                      "auth", "acl", "oauth", "crxde")
+        )
+        _skip_sec2 = not _has_dispatcher2
+        steps_to_query = [s for s in ["securityTest", "build", "deploy"] if not (s == "securityTest" and _skip_sec2)]
+        seen_ids: set  = set()
+        all_hits: list = []
+
+        _tenant = context.get("tenant_id", "") or context.get("program_id", "")
+        try:
+            from vector_store.store import find_similar_failures
+            for step in steps_to_query:
+                for h in find_similar_failures(
+                    error_type=step, error_message=query_text,
+                    key_lines=changed_files[:5], step=step, top_k=3,
+                    pipeline=context.get("pipeline_name", ""),
+                    tenant_id=_tenant,
+                ):
+                    uid = h.get("execution_id", "") + h.get("step", "")
+                    if uid not in seen_ids:
+                        seen_ids.add(uid)
+                        all_hits.append(h)
+        except Exception:
+            pass
+
+        if not all_hits:
+            return user_message, []
+
+        all_hits.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        enriched = _enrich_risk_with_memory(user_message, context)
+        return enriched, all_hits[:6]
+
+    except Exception:
+        return user_message, []
+
+
 def run_risk_analysis(bundle_or_context: Any) -> "RiskReport":
     """
     Feature 2: pre-deployment risk analysis.
@@ -564,8 +644,12 @@ def run_risk_analysis(bundle_or_context: Any) -> "RiskReport":
         context = bundle_or_context
 
     system  = _load_prompt("pre_deploy_risk.md")
-    user_msg = _enrich_risk_with_memory(_build_user_message(context), context)
+    user_msg, _similar = _enrich_risk_with_memory_with_hits(_build_user_message(context), context)
     report   = run_structured(system, user_msg, RiskReport, CONFIGS["risk"])
+
+    # Store similar incidents on the report object so the dashboard scorer can use them
+    if _similar:
+        report.__dict__["similar_incidents_raw"] = _similar
 
     # AI risk predictions are never stored back into ChromaDB.
     # ChromaDB stores only real source evidence (parsed logs, git diffs).

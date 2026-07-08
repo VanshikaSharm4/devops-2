@@ -17,6 +17,10 @@ You are given a structured context. **Read and weight these signals in priority 
 → CRXDE Lite active, DavEx/WebDAV active = environment config failure that will recur on every pipeline until fixed by ops team. Code changes do not cause or prevent this.
 → Do NOT lower securityTest risk because the commit looks "safe" — if the environment is broken, it will fail.
 
+**If `pipeline_validation.java_upgrade_pending` is true:**
+→ Elevate `loadTest` to Medium minimum — target environment is upgrading Java version.
+→ Pair with commit analysis: if DAO/LTS/repository/migration changes touch core Java, `loadTest` should be the primary code-caused risk step, not `build`.
+
 ### PRIORITY 2 — Historical Failure Patterns (high weight)
 **historical_baseline** — Splunk pipeline history: `failure_by_step` counts, `success_rate_pct`, `known_root_causes`.
 - If `failure_by_step.securityTest` > 3 in recent window → securityTest is operationally unstable, flag as Medium minimum
@@ -112,6 +116,12 @@ Certain commit patterns are structurally low-risk for build failures even when t
 - What it means: undoing a previous change. If the previous state was stable, revert is safe.
 - Build risk: LOW. Note the revert and focus on whether the reverted code was the cause of instability.
 
+**Merge commits (branch / PR / release merges):**
+- Title matches: `"Merge branch"`, `"Merge pull request"`, `"Merge commit"`, `"Merge remote-tracking"`
+- What it means: aggregated diff from many prior commits. Test files updated on the source branch will NOT appear as same-commit test updates.
+- Do NOT assign High build risk solely because service files lack *Test.java in the merge diff.
+- `service_without_test_update` structural findings on merge commits are advisory only — default build risk Low/Medium, not High/HOLD.
+
 **Zero-file commits (empty diff):**
 - files_changed = 0, lines_added = 0
 - Build risk: NEAR ZERO. Confidence must be under 20%. State: "no files changed — no commit-caused build risk."
@@ -119,19 +129,25 @@ Certain commit patterns are structurally low-risk for build failures even when t
 **Submodule pointer + pom.xml reactor-only commits (NO app code changes):**
 - Changed files are ONLY: `.gitmodules`, `pom.xml`, and submodule pointer files (mode 160000)
 - No `.java`, no `filter.xml`, no `.config`, no `ui.frontend`, no `ui.apps` source files changed
-- What it means: the parent repo is pointing to a new version of a submodule. The actual code change lives inside the submodule repo, which is NOT visible in this diff.
-- CRITICAL: You cannot assess build risk from code analysis. **Use `historical_baseline` and `environment_readiness` as your ONLY risk drivers for these commits.**
-- Risk calibration for submodule pointer bumps:
-  - `environment_readiness.status = NOT_READY` → that step is High
-  - `environment_readiness.status = CAUTION` → that step is Medium
-  - `historical_baseline.success_rate_pct > 70%` AND env is READY → Low risk, 35-45% confidence
-  - `historical_baseline.success_rate_pct < 50%` → Medium risk, 40-50% confidence
-  - `historical_baseline.failure_by_step` shows recurring failures at a step → Medium for that step
-- Do NOT default to Medium just because you cannot see the code. Low is correct when history is clean.
-- Do NOT predict `deployment_ordering_issue` — not observed in practice for submodule bumps.
-- Confidence cap: 55% — you are genuinely uncertain because the code is not visible.
+- What it means: the parent repo is pointing to a new version of a submodule. The actual code change lives inside the submodule repo, which MAY be visible in `structural_findings` if the submodule was scanned.
+- Risk calibration:
+  - **If `structural_findings` contains `service_without_test_update` or `injectmocks_without_mock` from the submodule scan**: set build to Medium (tests may fail at runtime in the submodule). This is the most common HDFC build failure mode — surefire fails because service logic changed without matching test updates.
+  - `environment_readiness.status = NOT_READY` → that env step is High (independent of build)
+  - `environment_readiness.status = CAUTION` → that env step is Medium
+  - `historical_baseline.success_rate_pct > 70%` AND env READY AND no structural findings → Low risk
+  - `historical_baseline.success_rate_pct < 50%` → Medium at minimum
+- Do NOT set build to High solely from submodule scan (confidence is capped at 55% for submodule findings).
+- Confidence cap: 55% for all submodule-derived risk.
 
-When ANY of these patterns are detected, explicitly state it in `reasoning` and in the narrative, and set build step_risk to Low unless there is specific evidence otherwise.
+When this pattern is detected AND structural_findings are empty: set build to Low unless history shows recurring build failures.
+
+**Rule 10 — DAO/LTS/repository migrations are loadTest risks, not build risks.**
+
+When commit title or diff indicates DAO, LTS, repository, or data-access migration AND non-test `core` Java changed:
+- Set `loadTest` to Medium minimum — performance KPI regression is the primary code-caused risk.
+- Set `build` to Low unless structural_findings show a definite compile pattern (SNAPSHOT, OSGi unresolved, interface removal).
+- Test dependency bumps (mockito/junit) and test-suite rewrites alone do NOT justify High build risk on migration commits — they are expected upgrade work.
+- `most_likely_failure_step` should be `loadTest` when loadTest risk >= build risk.
 
 **Rule 9 — Infrastructure failures are NOT predictable from code diffs. Do not attribute them to code.**
 
@@ -161,6 +177,12 @@ Use ONLY these failure_type values in technical_failure_hypotheses:
 - **config_propagation_issue**: OSGi config change not applied to all cluster nodes due to runmode mismatch
 - **integration_timeout**: New external call introduced without timeout configuration causes request thread blocking
 - **schema_mismatch**: DB or JCR node type change incompatible with existing persisted content
+- **unit_test_null_pointer**: New `@Autowired`/`@Inject` field added to a service/component class but the corresponding `*Test.java` was not updated with a `@Mock` for the new dependency. Tests using `@InjectMocks` will receive `null` for the new field and throw `NullPointerException`. Look for: added `@Autowired` in service class + no matching `@Mock` in test + `@InjectMocks` in test class.
+- **performance_regression**: DAO/LTS/repository/data-access layer changes in `core` alter query paths, caching, or serialization — build and unit tests pass but Cloud Manager `loadTest` KPI thresholds fail (response time, throughput). Common on migration/upgrade commits. Do NOT attribute to `build` when only test deps and test files changed alongside DAO production code.
+- **toolchain_misconfiguration**: Build agent does not have the required JDK version at the expected path. Cannot be predicted from code — infrastructure issue.
+
+**Important — when reading submodule diffs:**
+If the diff contains `## Submodule Code Changes`, treat that content as the actual code being built. A NullPointerException in unit tests from a submodule change is a `unit_test_null_pointer` failure. Look at the submodule's service classes for new `@Autowired` fields and check if test files were also updated. If service changed but tests were not → HIGH build risk.
 
 ---
 
@@ -173,8 +195,12 @@ Internally check this sequence before writing the JSON:
 0. **FIRST: Check `environment_readiness`.**
    - Is `status` NOT_READY or CAUTION?
    - What is `dominant_step`? Is it securityTest, deploy, or another env-level step?
-   - If yes → immediately set that step's risk to High (NOT_READY) or Medium (CAUTION).
-   - This is non-negotiable — environment state is the strongest signal available.
+   - **IMPORTANT — two cases behave differently:**
+     - If `dominant_step` is an **infra-class step** (securityTest, deploy, loadTest) AND code risk is LOW (no structural findings, submodule-only or trivial change): treat env as an **advisory**, NOT a hard override. The scorer will set the step to CAUTION/advisory, but the commit itself is not blocking. Reflect this in your narrative but do NOT set that step's risk to High from env alone.
+     - If `dominant_step` is an **infra-class step** AND code risk is MEDIUM/HIGH (real structural findings): env adds weight — set that step to High (NOT_READY) or Medium (CAUTION).
+     - If `dominant_step` is a **code-class step** (build, codeQuality) AND env is NOT_READY: that IS High — build failures are code-caused.
+   - **Why:** Setting securityTest/deploy High for every commit during env degradation causes ~87% false positive rate. The scorer is explicitly tuned to override this when code is LOW. Match that behaviour in your step_risks output.
+   - Non-infra env failures (build dominant): always High for that step regardless of code.
 
 1. **Check `historical_baseline.failure_by_step`.**
    - Which steps have the highest failure counts?
@@ -201,12 +227,28 @@ Internally check this sequence before writing the JSON:
 
 ## STEP 2 — OUTPUT JSON
 
+**⚠ CONSISTENCY RULE — read this before writing the JSON.**
+
+Write the `reasoning` field first, completely. Then derive `step_risks` directly from what you wrote. The two fields MUST agree:
+
+| If `reasoning` says... | `step_risks[step].level` must be... |
+|---|---|
+| "will fail", "certain failure", "definite", "LoginException", "Module not found", "compilation error" | **High** |
+| "may fail", "risk", "potential issue", "could break", "concern" | **Medium** |
+| "unlikely", "low risk", "safe", "no evidence", "pointer-only" | **Low** |
+
+**Self-check before closing the JSON:** re-read each `step_risks[].level` against your `reasoning`. If your reasoning names a specific error (LoginException, NoSuchMethodError, webpack module not found) and you set level to Low or Medium — that is an error. Correct it to High.
+
+**Inconsistency between `reasoning` and `step_risks` is the most common failure mode. Commit to your analysis.**
+
+---
+
 Return ONLY a valid JSON object matching the schema below. No markdown fences, no text outside the JSON.
 
 **Token budget:** You have a hard limit. Be concise. Keep string fields under 200 characters. Limit `technical_failure_hypotheses` to at most 3 entries. Limit `primary_risk_drivers` to at most 4 entries. Limit `step_risks` to at most 6 entries (one per pipeline stage). Use short bullet phrases, not full sentences. Empty arrays `[]` are fine for fields with no relevant data — never omit a required field.
 
 {
-  "reasoning": "Concise causal rationale: change_intent → key evidence → risk path → counterevidence",
+  "reasoning": "Full causal analysis: change_intent → what specifically will fail → why → counterevidence. Name files, error types, and specific mechanisms. Do NOT hedge here — if you believe it will fail, say so. This field is the source of truth; step_risks must be consistent with it.",
   "risk_level": "Critical|High|Medium|Low",
   "confidence_score": 0,
   "commit_sha": "string or null",

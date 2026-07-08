@@ -16,3 +16,5 @@ reports/
 .DS_Store
 .venv/
 venv/
+data/.secrets.json
+data/customer_config.json

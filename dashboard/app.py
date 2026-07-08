@@ -18,73 +18,130 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Customer registry ─────────────────────────────────────────────────────────
-_CUSTOMERS = {
-    "IDFC First Bank": {
-        "program_id":    os.getenv("PROGRAM_ID_IDFC",    "19905"),
-        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_IDFC", "2357452"),
-        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_IDFC",  "47202398"),
-        "org_id":        "358458CC558C6B5D7F000101@AdobeOrg",
-        "tenant_id":     "idfc",
-        "short":         "IDFC",
-        "git_local_dir": os.getenv("IDFC_GIT_LOCAL_DIR", ""),
-        "git_username":  os.getenv("IDFC_CM_GIT_USERNAME", ""),
-        "git_password":  os.getenv("IDFC_CM_GIT_PASSWORD", ""),
-    },
-    "HDFC Bank": {
-        "program_id":    os.getenv("PROGRAM_ID_HDFC",    "16360"),
-        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_HDFC", "43468192"),
-        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_HDFC",  "43472058"),
-        "org_id":        "3817033753EE89720A490D4D@AdobeOrg",
-        "tenant_id":     "hdfc",
-        "short":         "HDFC",
-        "git_local_dir": os.getenv("HDFC_GIT_LOCAL_DIR", ""),
-        "git_username":  os.getenv("HDFC_CM_GIT_USERNAME", ""),
-        "git_password":  os.getenv("HDFC_CM_GIT_PASSWORD", ""),
-    },
-    "Malaysia Airlines": {
-        "program_id":    os.getenv("PROGRAM_ID_MALAYSIA", "465"),
-        "pipeline_prod": os.getenv("PIPELINE_ID_PROD_MALAYSIA", "8302"),
-        "pipeline_dev":  os.getenv("PIPELINE_ID_DEV_MALAYSIA",  "1752536"),
-        "org_id":        "4D9676A8531512ED0A490D44@AdobeOrg",
-        "tenant_id":     "malaysia",
-        "short":         "MAS",
-        "git_local_dir": os.getenv("MALASIA_GIT_LOCAL_DIR", ""),
-        "git_username":  os.getenv("MALASIA_CM_GIT_USERNAME", ""),
-        "git_password":  os.getenv("MALASIA_CM_GIT_PASSWORD", ""),
-    },
-    "Bajaj": {
-        "program_id":    None,
-        "pipeline_prod": None,
-        "pipeline_dev":  None,
-        "org_id":        None,
-        "tenant_id":     "bajaj",
-        "short":         "Bajaj",
-        "git_local_dir": "",
-    },
-}
+# ── Customer registry — loaded from data/customer_config.json ─────────────────
+_CONFIG_PATH  = Path("data/customer_config.json")
+_SECRETS_PATH = Path("data/.secrets.json")
+
+
+def _load_customers() -> dict:
+    """
+    Load customer registry from data/customer_config.json + data/.secrets.json.
+    Falls back to env vars for backward compat.
+    Secrets file is gitignored — passwords never go into the repo.
+    """
+    customers = {}
+
+    # Load config
+    cfg = {}
+    if _CONFIG_PATH.exists():
+        try:
+            cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Load secrets
+    secrets = {}
+    if _SECRETS_PATH.exists():
+        try:
+            secrets = json.loads(_SECRETS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    for name, c in cfg.items():
+        pwd = secrets.get(name, {}).get("git_password", "") or os.getenv(
+            f"{c.get('short','').upper()}_CM_GIT_PASSWORD", ""
+        )
+        customers[name] = {
+            "program_id":    c.get("program_id") or os.getenv(f"PROGRAM_ID_{c.get('short','').upper()}", ""),
+            "pipeline_prod": c.get("pipeline_prod", ""),
+            "pipeline_dev":  c.get("pipeline_dev", ""),
+            "org_id":        c.get("org_id", ""),
+            "tenant_id":     c.get("tenant_id", ""),
+            "short":         c.get("short", name[:4].upper()),
+            "git_url":       c.get("git_url", ""),
+            "git_local_dir": c.get("git_local_dir", ""),
+            "git_branch":    c.get("git_branch", "master"),
+            "git_username":  c.get("git_username", ""),
+            "git_password":  pwd,
+            "splunk_index":  c.get("splunk_index", "ams_linux-os"),
+        }
+
+    # Fallback: hardcoded defaults if config file missing
+    if not customers:
+        customers = {
+            "IDFC First Bank": {
+                "program_id": os.getenv("PROGRAM_ID_IDFC", "19905"),
+                "pipeline_prod": os.getenv("PIPELINE_ID_PROD_IDFC", "2357452"),
+                "pipeline_dev": os.getenv("PIPELINE_ID_DEV_IDFC", "47202398"),
+                "org_id": "358458CC558C6B5D7F000101@AdobeOrg",
+                "tenant_id": "idfc", "short": "IDFC",
+                "git_local_dir": os.getenv("IDFC_GIT_LOCAL_DIR", ""),
+                "git_username": os.getenv("IDFC_CM_GIT_USERNAME", ""),
+                "git_password": os.getenv("IDFC_CM_GIT_PASSWORD", ""),
+                "git_url": "", "git_branch": "master",
+            },
+        }
+    return customers
+
+
+def _save_customer(name: str, config: dict, password: str = "") -> None:
+    """Save a customer to customer_config.json and password to .secrets.json."""
+    # Load existing
+    cfg = json.loads(_CONFIG_PATH.read_text()) if _CONFIG_PATH.exists() else {}
+    secrets = json.loads(_SECRETS_PATH.read_text()) if _SECRETS_PATH.exists() else {}
+
+    cfg[name] = {k: v for k, v in config.items() if k != "git_password"}
+    if password:
+        secrets.setdefault(name, {})["git_password"] = password
+
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    _SECRETS_PATH.write_text(json.dumps(secrets, indent=2), encoding="utf-8")
+
+
+def _delete_customer(name: str) -> None:
+    """Remove a customer from both config files."""
+    if _CONFIG_PATH.exists():
+        cfg = json.loads(_CONFIG_PATH.read_text())
+        cfg.pop(name, None)
+        _CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    if _SECRETS_PATH.exists():
+        secrets = json.loads(_SECRETS_PATH.read_text())
+        secrets.pop(name, None)
+        _SECRETS_PATH.write_text(json.dumps(secrets, indent=2))
+
+
+_CUSTOMERS = _load_customers()
 
 # Persist selected customer across reruns
+# Restore selected customer from URL query params on refresh
+# This keeps the customer selection when the page is reloaded
 if "selected_customer" not in st.session_state:
-    st.session_state["selected_customer"] = "IDFC First Bank"
+    _qp_customer = st.query_params.get("customer", "")
+    st.session_state["selected_customer"] = _qp_customer if _qp_customer in _CUSTOMERS else list(_CUSTOMERS.keys())[0]
 
-# Apply selected customer — inject program ID into environment so ingest.py picks it up
+# Build TenantContext from selected customer — do NOT write to os.environ here.
+# Writing to os.environ is process-global: 10 concurrent Streamlit sessions share
+# one process, so one user's customer switch overwrites another's mid-analysis.
+# Instead, pass TenantContext explicitly; only apply_to_env() inside analysis calls.
+from analysis.tenant_context import TenantContext as _TenantContext
+
 _active_customer = _CUSTOMERS.get(
     st.session_state.get("selected_customer", "IDFC First Bank"),
     _CUSTOMERS["IDFC First Bank"],
 )
-if _active_customer["program_id"]:
-    os.environ["PROGRAM_ID"]       = _active_customer["program_id"]
-if _active_customer["pipeline_prod"]:
-    os.environ["PIPELINE_ID_PROD"] = _active_customer["pipeline_prod"]
-if _active_customer.get("pipeline_dev"):
-    os.environ["PIPELINE_ID_DEV"]  = _active_customer["pipeline_dev"]
-if _active_customer.get("git_local_dir"):
-    os.environ["GIT_LOCAL_DIR"]    = _active_customer["git_local_dir"]
-if _active_customer.get("git_username"):
-    os.environ["CM_GIT_USERNAME"]  = _active_customer["git_username"]
-if _active_customer.get("git_password"):
-    os.environ["CM_GIT_PASSWORD"]  = _active_customer["git_password"]
+_tenant_ctx = _TenantContext.from_customer_dict(
+    st.session_state.get("selected_customer", "IDFC First Bank"),
+    _active_customer,
+)
+# Store in session state so analysis calls can access it without re-reading env
+st.session_state["_tenant_ctx"] = _tenant_ctx
+
+# Apply to env ONLY for this Streamlit rerun — subsequent reruns will re-apply
+# their own session's customer, overwriting this. This is safe for single-user
+# but still has a brief race window for concurrent multi-user on same process.
+# Full fix requires async workers (Phase 1) — this is the Phase 0 improvement.
+_tenant_ctx.apply_to_env()
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 T = {
@@ -977,6 +1034,307 @@ div[data-testid="stDataFrame"] [class*="gdg"] {{
     color: {T['text']} !important;
 }}
 
+/* AI analyzing loader — From Uiverse.io by mobinkakei */
+.ai-analyze-loader {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 28px 0 16px;
+}}
+.ai-analyze-loader-msg {{
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: {T['text_sub']};
+    margin: 0;
+    text-align: center;
+}}
+.ai-analyze-loader-wrapper {{
+    width: 200px;
+    height: 60px;
+    position: relative;
+    z-index: 1;
+}}
+.ai-analyze-circle {{
+    width: 20px;
+    height: 20px;
+    position: absolute;
+    border-radius: 50%;
+    background-color: {T['blue']};
+    left: 15%;
+    transform-origin: 50%;
+    animation: ai-analyze-circle .5s alternate infinite ease;
+}}
+@keyframes ai-analyze-circle {{
+    0% {{
+        top: 60px;
+        height: 5px;
+        border-radius: 50px 50px 25px 25px;
+        transform: scaleX(1.7);
+    }}
+    40% {{
+        height: 20px;
+        border-radius: 50%;
+        transform: scaleX(1);
+    }}
+    100% {{
+        top: 0%;
+    }}
+}}
+.ai-analyze-circle:nth-child(2) {{
+    left: 45%;
+    animation-delay: .2s;
+}}
+.ai-analyze-circle:nth-child(3) {{
+    left: auto;
+    right: 15%;
+    animation-delay: .3s;
+}}
+.ai-analyze-shadow {{
+    width: 20px;
+    height: 4px;
+    border-radius: 50%;
+    background-color: rgba(20, 115, 230, 0.35);
+    position: absolute;
+    top: 62px;
+    transform-origin: 50%;
+    z-index: -1;
+    left: 15%;
+    filter: blur(1px);
+    animation: ai-analyze-shadow .5s alternate infinite ease;
+}}
+@keyframes ai-analyze-shadow {{
+    0% {{
+        transform: scaleX(1.5);
+    }}
+    40% {{
+        transform: scaleX(1);
+        opacity: .7;
+    }}
+    100% {{
+        transform: scaleX(.2);
+        opacity: .4;
+    }}
+}}
+.ai-analyze-shadow:nth-child(4) {{
+    left: 45%;
+    animation-delay: .2s;
+}}
+.ai-analyze-shadow:nth-child(5) {{
+    left: auto;
+    right: 15%;
+    animation-delay: .3s;
+}}
+
+/* Risk assessment summary cards — From Uiverse.io by Yaya12085 */
+.ra-hero-stack {{
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin: 0 0 18px 0;
+}}
+.ra-ui-card {{
+    padding: 1rem;
+    background-color: #fff;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    width: 100%;
+    border-radius: 20px;
+    box-sizing: border-box;
+}}
+.ra-ui-card-hero .ra-ui-data .ra-ui-headline {{
+    font-size: 1.9rem;
+    line-height: 2.1rem;
+}}
+.ra-ui-card-compact {{
+    padding: 0.85rem 1rem;
+    border-radius: 14px;
+    box-shadow: 0 4px 10px -2px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+}}
+.ra-ui-card-compact .ra-ui-title-text {{
+    font-size: 15px;
+}}
+.ra-ui-card-compact .ra-ui-data .ra-ui-headline {{
+    font-size: 1.35rem;
+    line-height: 1.5rem;
+    margin-top: 0.65rem;
+    margin-bottom: 0.65rem;
+}}
+.ra-ui-card-compact .ra-ui-details {{
+    margin-top: 0.65rem;
+}}
+.ra-ui-card-compact .ra-ui-details p {{
+    font-size: 0.74rem;
+    margin-bottom: 6px;
+}}
+.ra-ui-title {{
+    display: flex;
+    align-items: center;
+}}
+.ra-ui-title span {{
+    position: relative;
+    padding: 0.5rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 9999px;
+    flex-shrink: 0;
+}}
+.ra-ui-title span svg {{
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffffff;
+    height: 1rem;
+    width: 1rem;
+}}
+.ra-ui-title-text {{
+    margin: 0 0 0 0.5rem;
+    color: #374151;
+    font-size: 18px;
+    font-weight: 600;
+    flex: 1;
+}}
+.ra-ui-percent {{
+    margin: 0 0 0 0.5rem;
+    font-weight: 600;
+    display: flex;
+    white-space: nowrap;
+}}
+.ra-ui-data {{
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+}}
+.ra-ui-data .ra-ui-headline {{
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+    color: #1F2937;
+    font-size: 1.75rem;
+    line-height: 2rem;
+    font-weight: 700;
+    text-align: left;
+}}
+.ra-ui-details {{
+    margin-top: 1rem;
+}}
+.ra-ui-details p {{
+    margin: 0 0 8px 0;
+    line-height: 1.6;
+    color: {T['text']};
+    font-size: 0.85rem;
+}}
+.ra-ui-details .ra-ui-sub {{
+    color: {T['text_muted']};
+    font-size: 0.80rem;
+}}
+.ra-ui-details .ra-ui-footnote {{
+    color: {T['text_muted']};
+    font-size: 0.68rem;
+    margin-top: 10px !important;
+}}
+.ra-ui-details .ra-ui-section-label {{
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: {T['text_muted']};
+    margin: 12px 0 6px 0 !important;
+}}
+.ra-ui-details .ra-ui-finding {{
+    font-size: 0.76rem;
+    padding: 4px 0;
+    border-bottom: 1px solid {T['border2']};
+}}
+.ra-ui-details .ra-ui-action {{
+    font-size: 0.74rem;
+    font-weight: 600;
+}}
+
+/* Historical matches — compact horizontal carousel */
+.hist-carousel-wrap {{
+    margin: 0 0 18px 0;
+}}
+.hist-carousel-label {{
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: {T['text_muted']};
+    margin: 0 0 8px 0;
+}}
+.hist-carousel {{
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
+}}
+.hist-carousel::-webkit-scrollbar {{
+    height: 4px;
+}}
+.hist-carousel::-webkit-scrollbar-thumb {{
+    background: {T['border']};
+    border-radius: 4px;
+}}
+.hist-slide {{
+    scroll-snap-align: start;
+    flex: 0 0 min(272px, 78vw);
+    padding: 10px 12px;
+    background: #fff;
+    border: 1px solid {T['border']};
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    box-sizing: border-box;
+}}
+.hist-slide-top {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}}
+.hist-slide-score {{
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+}}
+.hist-slide-step {{
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: {T['text_muted']};
+    background: {T['surface2']};
+    border: 1px solid {T['border']};
+    padding: 2px 6px;
+    border-radius: 4px;
+}}
+.hist-slide-src {{
+    font-size: 0.65rem;
+    color: {T['text_muted']};
+    margin-left: auto;
+    white-space: nowrap;
+}}
+.hist-slide-cause {{
+    font-size: 0.74rem;
+    color: {T['text']};
+    line-height: 1.45;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}}
+.hist-carousel-empty {{
+    font-size: 0.74rem;
+    color: {T['text_muted']};
+    padding: 10px 0;
+    margin: 0;
+}}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -1019,6 +1377,179 @@ def section_label(text: str, *, dark: bool = False) -> None:
         f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;'
         f'letter-spacing:0.09em;color:{color};margin:0 0 0.45rem 0">{text}</p>',
         unsafe_allow_html=True,
+    )
+
+
+def _ai_analyzing_loader_html(message: str = "") -> str:
+    return (
+        '<div id="risk-analysis-anchor" class="ai-analyze-loader">'
+        '<div class="ai-analyze-loader-wrapper">'
+        '<div class="ai-analyze-circle"></div>'
+        '<div class="ai-analyze-circle"></div>'
+        '<div class="ai-analyze-circle"></div>'
+        '<div class="ai-analyze-shadow"></div>'
+        '<div class="ai-analyze-shadow"></div>'
+        '<div class="ai-analyze-shadow"></div>'
+        '</div>'
+        '</div>'
+    )
+
+
+@contextmanager
+def ai_analyzing_loader(message: str):
+    """Show bouncing-dots loader while AI risk analysis runs."""
+    _slot = st.empty()
+    _slot.markdown(_ai_analyzing_loader_html(message), unsafe_allow_html=True)
+    _scroll_to_risk_analysis_if_needed()
+    try:
+        yield
+    finally:
+        _slot.empty()
+
+
+def _scroll_to_risk_analysis_if_needed() -> None:
+    """Smooth-scroll to the analysis loader after a commit SHA is selected."""
+    if not st.session_state.pop("risk_scroll_to_analysis", False):
+        return
+    import streamlit.components.v1 as components
+    components.html(
+        """<script>
+        (function scrollToAnalysis() {
+            const findAnchor = () => {
+                const roots = [window.parent.document];
+                try {
+                    for (const iframe of window.parent.document.querySelectorAll('iframe')) {
+                        if (iframe.contentDocument) roots.push(iframe.contentDocument);
+                    }
+                } catch (e) {}
+                for (const doc of roots) {
+                    const el = doc.getElementById('risk-analysis-anchor');
+                    if (el) return el;
+                }
+                return null;
+            };
+            const el = findAnchor();
+            if (el) {
+                el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                return;
+            }
+            setTimeout(scrollToAnalysis, 120);
+        })();
+        </script>""",
+        height=0,
+    )
+
+
+def _ra_card_icon_svg(kind: str) -> str:
+    icons = {
+        "check": (
+            '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" '
+            'stroke-width="2.5" stroke="currentColor">'
+            '<path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>'
+            '</svg>'
+        ),
+        "warn": (
+            '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" '
+            'stroke-width="2.5" stroke="currentColor">'
+            '<path stroke-linecap="round" stroke-linejoin="round" '
+            'd="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>'
+            '</svg>'
+        ),
+        "x": (
+            '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" '
+            'stroke-width="2.5" stroke="currentColor">'
+            '<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>'
+            '</svg>'
+        ),
+        "server": (
+            '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" '
+            'stroke-width="2" stroke="currentColor">'
+            '<path stroke-linecap="round" stroke-linejoin="round" '
+            'd="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>'
+            '</svg>'
+        ),
+        "build": (
+            '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" '
+            'stroke-width="2" stroke="currentColor">'
+            '<path stroke-linecap="round" stroke-linejoin="round" '
+            'd="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>'
+            '<path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>'
+            '</svg>'
+        ),
+    }
+    return icons.get(kind, icons["check"])
+
+
+def risk_summary_card_html(
+    title: str,
+    percent_label: str,
+    percent_color: str,
+    icon_bg: str,
+    headline: str,
+    body_html: str = "",
+    icon_kind: str = "check",
+    compact: bool = False,
+) -> str:
+    _variant = "ra-ui-card-compact" if compact else "ra-ui-card-hero"
+    return (
+        f'<div class="ra-ui-card {_variant}">'
+        f'<div class="ra-ui-title">'
+        f'<span style="background-color:{icon_bg}">'
+        f'{_ra_card_icon_svg(icon_kind)}'
+        f'</span>'
+        f'<p class="ra-ui-title-text">{title}</p>'
+        f'<p class="ra-ui-percent" style="color:{percent_color}">{percent_label}</p>'
+        f'</div>'
+        f'<div class="ra-ui-data">'
+        f'<p class="ra-ui-headline">{headline}</p>'
+        f'<div class="ra-ui-details">{body_html}</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def historical_matches_carousel_html(hits: list, tokens: dict) -> str:
+    """Minimal horizontal carousel for historical pipeline matches."""
+    if not hits:
+        return (
+            '<div class="hist-carousel-wrap">'
+            '<p class="hist-carousel-label">Historical Matches</p>'
+            '<p class="hist-carousel-empty">No similar failures in pipeline memory yet.</p>'
+            '</div>'
+        )
+    import re as _re_car
+    slides = []
+    for _h in hits[:5]:
+        _score = int(_h.get("similarity_score", 0) * 100)
+        _step = (_h.get("step") or "unknown").strip()
+        _cause = ((_h.get("root_cause") or "").strip())[:120]
+        if len((_h.get("root_cause") or "")) > 120:
+            _cause += "…"
+        _eid = str(_h.get("execution_id", ""))
+        _sim_col = tokens["red"] if _score >= 85 else tokens["amber"] if _score >= 70 else tokens["green"]
+        _sha_m = _re_car.search(r"risk-([a-f0-9]{6,12})-(\w+)", _eid)
+        if _eid.isdigit():
+            _src = "#" + _eid[:8]
+        elif _sha_m:
+            _src = _sha_m.group(1)[:8]
+        else:
+            _src = _eid[:10] or "—"
+        slides.append(
+            f'<div class="hist-slide">'
+            f'<div class="hist-slide-top">'
+            f'<span class="hist-slide-score" style="color:{_sim_col};'
+            f'background:{_sim_col}18;border:1px solid {_sim_col}44">{_score}%</span>'
+            f'<span class="hist-slide-step">{_step}</span>'
+            f'<span class="hist-slide-src">{_src}</span>'
+            f'</div>'
+            f'<p class="hist-slide-cause">{_cause or "Similar failure pattern"}</p>'
+            f'</div>'
+        )
+    return (
+        '<div class="hist-carousel-wrap">'
+        '<p class="hist-carousel-label">Historical Matches · past pipeline failures like this change</p>'
+        f'<div class="hist-carousel">{"".join(slides)}</div>'
+        '</div>'
     )
 
 
@@ -1338,8 +1869,15 @@ def chart_theme(height: int = 280, show_legend: bool = False) -> dict:
 # ── Background Splunk refresh ─────────────────────────────────────────────────
 import threading as _threading
 
-_splunk_refresh_lock  = _threading.Lock()
+# Per-program_id locks — HDFC refresh doesn't block IDFC refresh
+_splunk_refresh_locks: dict = {}
 _splunk_refresh_state = {"running": False, "done": False, "error": None}
+
+
+def _get_splunk_lock(program_id: str) -> _threading.Lock:
+    if program_id not in _splunk_refresh_locks:
+        _splunk_refresh_locks[program_id] = _threading.Lock()
+    return _splunk_refresh_locks[program_id]
 
 
 def _run_splunk_refresh_bg():
@@ -1362,7 +1900,8 @@ def _run_splunk_refresh_bg():
 
 def _maybe_start_bg_refresh(force: bool = False):
     """Start background Splunk refresh if not running and cache is stale/empty."""
-    with _splunk_refresh_lock:
+    _pid_key = str(os.getenv("PROGRAM_ID", "unknown"))
+    with _get_splunk_lock(_pid_key):
         if _splunk_refresh_state["running"]:
             return
         try:
@@ -1445,9 +1984,10 @@ def get_data_or_stop():
         st.stop()
 
     # Auto-enrich pending predictions with actual outcomes from Splunk
+    # Pass program_id so we only resolve predictions for the active customer.
     try:
         from analysis.prediction_store import enrich_from_splunk
-        enrich_from_splunk(pdf, fdf)
+        enrich_from_splunk(pdf, fdf, program_id=str(_pid))
     except Exception:
         pass
 
@@ -1463,6 +2003,7 @@ _PAGE_ICONS = {
     "Memory Search":         ":material/search:",
     "Memory Explorer":       ":material/travel_explore:",
     "Static Analysis":       ":material/code:",
+    "Repo Settings":         ":material/settings:",
 }
 _PAGES = list(_PAGE_ICONS.keys())
 
@@ -1517,12 +2058,15 @@ def _render_sidebar():
     if _open:
         st.markdown(
             f'<div style="padding:0 12px 4px;overflow:hidden;white-space:nowrap">'
-            f'<p style="font-size:0.78rem;font-weight:700;color:#1A1A1A;margin:0 0 2px 0">DevOps Intelligence</p>'
+            f'<p style="font-size:0.78rem;font-weight:700;color:#1A1A1A;margin:0 0 2px 0">Argus</p>'
             f'</div>',
             unsafe_allow_html=True,
         )
         # ── Customer selector ──
-        _cur = st.session_state.get("selected_customer", "IDFC First Bank")
+        _cur = st.session_state.get("selected_customer", list(_CUSTOMERS.keys())[0])
+        # Keep URL in sync with current customer
+        if st.query_params.get("customer") != _cur:
+            st.query_params["customer"] = _cur
         _new = st.selectbox(
             "Customer",
             list(_CUSTOMERS.keys()),
@@ -1532,6 +2076,7 @@ def _render_sidebar():
         )
         if _new != _cur:
             st.session_state["selected_customer"] = _new
+            st.query_params["customer"] = _new   # persist in URL so refresh restores it
             st.session_state.pop("risk_report", None)
             st.session_state.pop("risk_base_bundle", None)
             st.cache_resource.clear()
@@ -1766,7 +2311,10 @@ if page == "Overview":
         section_label("Execution Trend — Last 30 Days")
         if "Deploy Start Time" in pipeline_df.columns:
             df_t = pipeline_df.copy()
-            df_t["date"] = pd.to_datetime(df_t["Deploy Start Time"], errors="coerce").dt.date
+            df_t["date"] = pd.to_datetime(
+                df_t["Deploy Start Time"].str.replace(r"\s*(PDT|PST|UTC|GMT)$", "", regex=True),
+                errors="coerce"
+            ).dt.date
             df_t = df_t.dropna(subset=["date"])
             daily = df_t.groupby(["date", "Status"]).size().reset_index(name="count")
             color_map = {
@@ -1841,11 +2389,27 @@ if page == "Overview":
 elif page == "Failure Analysis":
     section_header("Failure Analysis", "AI-powered root cause analysis across all pipeline executions")
 
-    report_path = Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json")
+    _fa_pid = _active_customer.get("program_id") or "19905"
+    saved = None
+    # Primary: load from SQLite
+    try:
+        from db.report_store import load_failure_report as _load_fa
+        _fa_result = _load_fa(_fa_pid)
+        if _fa_result:
+            saved, _ = _fa_result
+    except Exception:
+        pass
+    # Fallback: legacy file (for environments without DB yet)
+    if saved is None:
+        report_path = Path(f"reports/latest_report_{_fa_pid}.json")
+        if report_path.exists():
+            try:
+                with open(report_path) as f:
+                    saved = json.load(f)
+            except Exception:
+                saved = None
 
-    if report_path.exists():
-        with open(report_path) as f:
-            saved = json.load(f)
+    if saved is not None:
 
 
         k1, k2, k3, k4 = st.columns(4, gap="small")
@@ -1935,9 +2499,18 @@ elif page == "Failure Analysis":
                 ctx    = build_report_context(bundle)
                 report = run_analysis(ctx, pipeline_df=_pdf, failed_df=_fdf)
 
-                os.makedirs("reports", exist_ok=True)
-                with open(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json", "w") as f:
-                    json.dump(report.model_dump(mode="json"), f, indent=2)
+                try:
+                    from db.report_store import save_failure_report as _save_fa
+                    _save_fa(
+                        program_id=_active_customer.get("program_id","19905"),
+                        report_json=report.model_dump(mode="json"),
+                        customer=_active_customer.get("short",""),
+                    )
+                except Exception:
+                    # Fallback to file
+                    os.makedirs("reports", exist_ok=True)
+                    with open(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json", "w") as f:
+                        json.dump(report.model_dump(mode="json"), f, indent=2)
                 st.cache_data.clear()
                 st.cache_resource.clear()
                 st.rerun()
@@ -1961,24 +2534,16 @@ elif page == "Risk Assessment":
 
     # ── Dev-pipeline executions table ─────────────────────────────────────────
     with content_card():
-        section_label("Non-Production Pipeline Executions", dark=True)
+        section_label("Recent Pipeline Executions", dark=True)
         st.markdown(
             f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0 0 10px 0">'
-            f'Showing completed (FINISHED) non-production runs. '
-            f'Click a row to assess Production risk for that execution.</p>',
+            f'All recent executions — click any row to run a risk assessment.</p>',
             unsafe_allow_html=True,
         )
 
-        # Show all NON-production pipelines for the selected customer
-        # Exclude the prod pipeline only — show everything else (dev, stage, UAT, QA etc.)
-        _prod_pid = str(_active_customer.get("pipeline_prod", "") or "")
-        if _prod_pid:
-            _dev_df  = pipeline_df[pipeline_df["pipelineId"].astype(str) != _prod_pid].copy()
-            _dev_fdf = failed_df[failed_df["pipelineId"].astype(str) != _prod_pid].copy() if "pipelineId" in failed_df.columns else failed_df.copy()
-        else:
-            # Fallback: exclude anything with "prod" in the name
-            _dev_df  = pipeline_df[~pipeline_df["pipelineName"].str.contains("Prod|prod|Production", case=False, na=False)].copy()
-            _dev_fdf = failed_df[~failed_df["pipelineName"].str.contains("Prod|prod|Production", case=False, na=False)].copy()
+        # Show ALL pipelines — developers need to assess any recent execution
+        _dev_df  = pipeline_df.copy()
+        _dev_fdf = failed_df.copy()
 
         # CSV supplement only for IDFC (only customer with local CSV)
         if _active_customer.get("tenant_id") == "idfc":
@@ -2002,13 +2567,12 @@ elif page == "Risk Assessment":
         else:
             _dev_df["firstFailedStep"] = ""
 
-        # Show FINISHED only — cancelled/failed/running don't need promotion assessment
-        _dev_df = _dev_df[_dev_df["Status"] == "FINISHED"].copy()
+        # Show all statuses — developers may want to assess any recent execution
         _dev_df = _dev_df.drop_duplicates("executionId")
         _dev_df = _dev_df.sort_values("Deploy Start Time", ascending=False)
 
         if _dev_df.empty:
-            st.info("No Dev-pipeline executions found in the current data export.")
+            st.info("No pipeline executions found in the current data export.")
         else:
             # Column headers
             _dh = st.columns([1.2, 1.3, 1.5, 1.8, 1.0])
@@ -2071,7 +2635,7 @@ elif page == "Risk Assessment":
         )
         try:
             from connectors.git_connector import get_recent_commits, get_sync_status
-            _gc_commits = get_recent_commits(n=15)
+            _gc_commits = get_recent_commits(branch=_active_customer.get("git_branch",""), n=15)
             _gc_sync = get_sync_status()
             if _gc_sync.get("age_minutes") is not None:
                 st.markdown(
@@ -2110,38 +2674,307 @@ elif page == "Risk Assessment":
                             st.session_state.pop("risk_dev_status", None)
                             st.session_state.pop("risk_dev_step", None)
                             st.session_state.pop("risk_report", None)
+                            st.session_state["risk_scroll_to_analysis"] = True
                             st.rerun()
                     _gcc2.markdown(f'<p style="font-size:0.78rem;color:{T["text"]};margin:6px 0">{_gc_title}</p>', unsafe_allow_html=True)
                     _gcc3.markdown(f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:6px 0">{_gc_author[:20]}</p>', unsafe_allow_html=True)
                     _gcc4.markdown(f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:6px 0">{_gc_when}</p>', unsafe_allow_html=True)
             else:
-                st.info("No commits found. Check GIT_LOCAL_DIR in .env")
+                _gc_branch_cfg = _active_customer.get("git_branch", "")
+                st.markdown(
+                    f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:4px 0">'
+                    f'No recent commits found on branch <code>{_gc_branch_cfg or "HEAD"}</code>. '
+                    f'The branch may not be fetched locally yet — Argus will fetch it automatically '
+                    f'when you run an assessment.</p>',
+                    unsafe_allow_html=True,
+                )
         except Exception as _gc_e:
-            st.caption(f"Git repo unavailable: {_gc_e}")
+            _gc_err = str(_gc_e)
+            if "ambiguous argument" in _gc_err or "unknown revision" in _gc_err:
+                _gc_branch_cfg = _active_customer.get("git_branch", "")
+                st.markdown(
+                    f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:4px 0">'
+                    f'Branch <code>{_gc_branch_cfg}</code> not in local repo yet. '
+                    f'Run an assessment — Argus will fetch it automatically.</p>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(f"Git repo unavailable — {_gc_err[:80]}")
 
-    # ── SHA search bar (manual override) ──────────────────────────────────────
+    # ── SHA search bar ────────────────────────────────────────────────────────
     st.markdown(
-        f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:8px 0 4px 0">'
-        f'Or paste a commit SHA directly:</p>',
+        f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
+        f'border-radius:8px;padding:12px 16px;margin:8px 0 6px 0">'
+        f'<p style="font-size:0.78rem;font-weight:600;color:{T["text"]};margin:0 0 6px 0">'
+        f'Paste a commit SHA</p>'
+        f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0;line-height:1.7">'
+        f'<b>Where to find it:</b> Open Cloud Manager → your program → Pipelines → click any execution → '
+        f'look for <code style="background:{T["surface"]};padding:1px 5px;border-radius:3px">COMMIT:</code> '
+        f'under the Build &amp; Unit Testing step. Copy the full 40-character SHA shown there.</p>'
+        f'</div>',
         unsafe_allow_html=True,
     )
-    _search_col, _btn_col = st.columns([5, 1], gap="small")
-    with _search_col:
-        _sha_input = st.text_input(
-            "sha_search",
-            placeholder="e.g. 8d024d5490c60e9a32e2d5c54d011e3e70d1e7c",
-            label_visibility="collapsed",
-            key="_sha_search_input",
-        )
-    with _btn_col:
-        _sha_search_clicked = st.button("Analyse", type="primary", use_container_width=True, key="_sha_search_btn")
+    with st.form("sha_search_form", clear_on_submit=False):
+        _search_col, _btn_col = st.columns([5, 1], gap="small")
+        with _search_col:
+            _sha_input = st.text_input(
+                "sha_search",
+                placeholder="e.g. 70190dfe144ba4e1d92972a329dea9d4f3f540eb",
+                label_visibility="collapsed",
+                key="_sha_search_input",
+            )
+        with _btn_col:
+            _sha_search_clicked = st.form_submit_button("Analyse", type="primary", use_container_width=True)
 
     if _sha_search_clicked and _sha_input.strip():
         _cleaned = _sha_input.strip()
-        st.session_state["risk_commit_input"] = _cleaned
-        st.session_state.pop("risk_dev_exec", None)
-        st.session_state.pop("risk_report", None)
-        st.rerun()
+
+        # Reject execution IDs (pure digits) — SHA only accepted now
+        import re as _re_input
+        if _re_input.match(r'^\d{5,14}$', _cleaned):
+            st.warning("Please paste the commit SHA, not the execution ID. Find it in Cloud Manager → execution page → COMMIT: field under Build & Unit Testing.")
+            _cleaned = ""
+        elif False:  # placeholder to keep the indentation block below intact
+            _resolved_sha = ""
+            _eid = _cleaned
+
+            _pid       = _active_customer.get("program_id", "")
+            _git_dir   = _active_customer.get("git_local_dir", "")
+            _branch    = _active_customer.get("git_branch", "master")
+
+            # Build list of all repos to search for this customer (main + additional)
+            _all_git_dirs = [_git_dir] if _git_dir else []
+            try:
+                import json as _json_rc
+                _rc = _json_rc.loads(Path("data/repo_config.json").read_text())
+                _cname = st.session_state.get("selected_customer", "")
+                for _ar in _rc.get(_cname, {}).get("additional_repos", []):
+                    _ald = _ar.get("local_dir", "")
+                    if _ald and _ald not in _all_git_dirs and Path(_ald).exists():
+                        _all_git_dirs.append(_ald)
+            except Exception:
+                pass
+
+            # Step 1: Git tag lookup across ALL repos for this customer
+            for _git_dir in _all_git_dirs:
+                try:
+                    import subprocess as _sp_tag
+                    _tag_out = _sp_tag.run(
+                        ["git", "tag", "--list", f"*{_eid}*"],
+                        cwd=_git_dir, capture_output=True, text=True, timeout=10,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    ).stdout.strip()
+                    if not _tag_out:
+                        # Fetch tags if not found locally
+                        _sp_tag.run(
+                            ["git", "fetch", "--tags", "--quiet"],
+                            cwd=_git_dir, capture_output=True, timeout=30,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                        )
+                        _tag_out = _sp_tag.run(
+                            ["git", "tag", "--list", f"*{_eid}*"],
+                            cwd=_git_dir, capture_output=True, text=True, timeout=10,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                        ).stdout.strip()
+                    if _tag_out:
+                        _tag_name = _tag_out.splitlines()[0].strip()
+                        _sha_out = _sp_tag.run(
+                            ["git", "rev-list", "-n", "1", _tag_name],
+                            cwd=_git_dir, capture_output=True, text=True, timeout=10,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                        ).stdout.strip()
+                        if _sha_out and len(_sha_out) >= 40:
+                            _resolved_sha = _sha_out
+                            break  # found it — stop searching other repos
+                except Exception:
+                    pass
+                if _resolved_sha:
+                    break
+
+            # Restore _git_dir to primary repo for subsequent steps
+            _git_dir = _active_customer.get("git_local_dir", "")
+
+            # Step 2: CM API — fallback if git tag not found (requires service account token on server)
+            if not _resolved_sha:
+                try:
+                    from connectors.cm_connector import get_commit_sha_from_execution
+                    _ppid = _active_customer.get("pipeline_prod", "")
+                    _tid  = _active_customer.get("tenant_id", "")
+                    _resolved_sha = get_commit_sha_from_execution(_pid, _ppid, _eid, tenant_id=_tid) or ""
+                except Exception:
+                    pass
+
+            # Step 2: Splunk timestamp correlation — only if CM API failed
+            # MUST use this customer's git repo (pass git_dir explicitly to avoid cross-tenant leak)
+            if not _resolved_sha and _all_git_dirs:
+                try:
+                    _splunk_cache_path = Path(f"data/cache/splunk_cache_{_pid}.pkl")
+                    if _splunk_cache_path.exists():
+                        import pickle as _pkl
+                        with open(_splunk_cache_path, "rb") as _cf:
+                            _cdata = _pkl.load(_cf)
+                        _cpdf = _cdata.get("pipeline_df")
+                        if _cpdf is not None and not _cpdf.empty:
+                            import os as _os_eid
+                            # Temporarily set correct git dir for this customer's correlation
+                            _old_git_dir = _os_eid.environ.get("GIT_LOCAL_DIR", "")
+                            _os_eid.environ["GIT_LOCAL_DIR"] = _git_dir
+                            try:
+                                from connectors.git_connector import correlate_executions_to_commits
+                                _crows = _cpdf.drop_duplicates("executionId").to_dict("records")
+                                # Try configured branch first, then --all (handles release/Dev-v1 etc.)
+                                _cmap = correlate_executions_to_commits(_crows, branch=_branch)
+                                if _eid not in _cmap:
+                                    # Branch mismatch — try searching all branches
+                                    _cmap = correlate_executions_to_commits(_crows, branch="")
+                                if _eid in _cmap:
+                                    _resolved_sha = _cmap[_eid].get("sha", "")
+                            finally:
+                                if _old_git_dir:
+                                    _os_eid.environ["GIT_LOCAL_DIR"] = _old_git_dir
+                except Exception:
+                    pass
+
+            # If not resolved, try a fresh Splunk pull once before showing error
+            if not _resolved_sha and _pid:
+                _auto_refresh_key = f"_eid_refreshed_{_eid}"
+                if not st.session_state.get(_auto_refresh_key):
+                    st.session_state[_auto_refresh_key] = True
+                    with st.spinner(f"Execution {_eid} not in cache — refreshing pipeline data..."):
+                        try:
+                            from analysis.ingest import load_data as _ld_fresh
+                            _pdf_fresh, _fdf_fresh, _, _ = _ld_fresh(program_id=int(_pid), force_refresh=True)
+                            # Retry Splunk timing with fresh data
+                            if _pdf_fresh is not None and not _pdf_fresh.empty and _all_git_dirs:
+                                import os as _os_fresh
+                                _old_fresh = _os_fresh.environ.get("GIT_LOCAL_DIR", "")
+                                _os_fresh.environ["GIT_LOCAL_DIR"] = _all_git_dirs[0]
+                                try:
+                                    from connectors.git_connector import correlate_executions_to_commits
+                                    _cmap_f = correlate_executions_to_commits(
+                                        _pdf_fresh.drop_duplicates("executionId").to_dict("records"), branch=""
+                                    )
+                                    if _eid in _cmap_f:
+                                        _resolved_sha = _cmap_f[_eid].get("sha", "")
+                                finally:
+                                    if _old_fresh: _os_fresh.environ["GIT_LOCAL_DIR"] = _old_fresh
+                        except Exception:
+                            pass
+
+            if _resolved_sha:
+                st.success(f"Execution ID {_eid} → SHA `{_resolved_sha[:12]}...`")
+                _cleaned = _resolved_sha
+            else:
+                st.markdown(
+                    f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
+                    f'border-left:4px solid {T["amber"]};border-radius:8px;padding:16px 20px;margin:10px 0">'
+                    f'<p style="font-size:0.82rem;font-weight:700;color:{T["text"]};margin:0 0 6px 0">'
+                    f'Argus could not find this execution</p>'
+                    f'<p style="font-size:0.78rem;color:{T["text_muted"]};margin:0 0 10px 0;line-height:1.6">'
+                    f'Quick heads up — Argus is a prototype. It does not have every repository for every customer '
+                    f'pre-loaded out of the box. Some customers, like this one, use multiple repos in Cloud Manager, '
+                    f'and Argus only knows about the ones it has been told about so far. '
+                    f'This execution ran against a repo that is not on the server yet — which is why it cannot find the commit.'
+                    f'</p>'
+                    f'<p style="font-size:0.75rem;color:{T["text_muted"]};margin:0;line-height:1.5">'
+                    f'The only way to fix this is to add the repo name below — Argus will clone it automatically and then you are good to go. '
+                    f'Pasting the commit SHA directly will not help here either, since Argus still needs the repo cloned locally to read what code actually changed.'
+                    f'</p>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                _tried_key = f"_repo_tried_{_eid}"
+                _existing_url = _active_customer.get("git_url", "")
+                _org = _existing_url.rstrip("/").split("/")[-2] if _existing_url else ""
+                _base = f"https://git.cloudmanager.adobe.com/{_org}/" if _org else "https://git.cloudmanager.adobe.com/org/"
+                _add_repo_btn = False
+                _repo_input = ""
+
+                if st.session_state.get(_tried_key):
+                    st.info("Repo already added. Click Refresh in the sidebar to reload pipeline data, then try the execution ID again.")
+                    _cleaned = ""
+                else:
+                    with st.form(f"add_repo_form_{_eid}", clear_on_submit=True):
+                        st.markdown(
+                            f'<p style="font-size:0.78rem;font-weight:600;color:{T["text"]};margin:0 0 8px 0">'
+                            f'Which repository did this execution use?</p>'
+                            f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0 0 10px 0">'
+                            f'Find it in Cloud Manager under your program name → Repositories.</p>',
+                            unsafe_allow_html=True,
+                        )
+                        _repo_input = st.text_input(
+                            "Repository name",
+                            placeholder="b86-hdfcformsmaster",
+                            help=f"Will be cloned from {_base}<repo-name>/"
+                        )
+                        _add_repo_btn = st.form_submit_button("Clone and retry", type="primary")
+
+                if _add_repo_btn and _repo_input.strip():
+                    _repo_name = _repo_input.strip()
+                    _extra_url = f"{_base}{_repo_name}/"
+                    _repos_base = os.getenv("REPOS_BASE_DIR", str(Path.home() / "projects"))
+                    _extra_local = f"{_repos_base}/{_repo_name}"
+                    _git_pwd = _active_customer.get("git_password", "")
+                    _git_user = _active_customer.get("git_username", "vanssharma-adobe-com")
+
+                    if not _git_pwd:
+                        st.error("No git password found for this customer. Add it in Repo Settings first.")
+                    else:
+                        with st.spinner(f"Cloning {_repo_name}..."):
+                            try:
+                                import subprocess as _sp_clone
+                                from urllib.parse import quote as _q_clone
+                                _auth = _extra_url.replace("https://", f"https://{_q_clone(_git_user,safe='')}:{_q_clone(_git_pwd,safe='')}@")
+                                Path(_extra_local).mkdir(parents=True, exist_ok=True)
+                                _cr = _sp_clone.run(
+                                    ["git", "clone", _auth, _extra_local],
+                                    capture_output=True, text=True, timeout=300,
+                                    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                                )
+                                if _cr.returncode != 0 and "already exists" not in _cr.stderr:
+                                    st.error(f"Clone failed: {_cr.stderr[:200]}")
+                                else:
+                                    st.success(f"Cloned to {_extra_local}")
+                                    # Retry resolution with the new repo
+                                    import os as _os_retry
+                                    _old = _os_retry.environ.get("GIT_LOCAL_DIR", "")
+                                    _os_retry.environ["GIT_LOCAL_DIR"] = _extra_local
+                                    try:
+                                        from connectors.git_connector import correlate_executions_to_commits
+                                        with open(Path(f"data/cache/splunk_cache_{_pid}.pkl"), "rb") as _cf2:
+                                            import pickle as _pkl2
+                                            _cd2 = _pkl2.load(_cf2)
+                                        _cpdf2 = _cd2.get("pipeline_df")
+                                        if _cpdf2 is not None:
+                                            _cm2 = correlate_executions_to_commits(
+                                                _cpdf2.drop_duplicates("executionId").to_dict("records"), branch=""
+                                            )
+                                            if _eid in _cm2:
+                                                _resolved_sha = _cm2[_eid].get("sha", "")
+                                    finally:
+                                        if _old: _os_retry.environ["GIT_LOCAL_DIR"] = _old
+
+                                    if _resolved_sha:
+                                        st.success(f"Resolved → SHA `{_resolved_sha[:12]}...`")
+                                        _cleaned = _resolved_sha
+                                    else:
+                                        # Mark as tried so form doesn't loop
+                                        st.session_state[_tried_key] = True
+                                        st.info(
+                                            "Repo cloned. The execution may be too recent for Splunk. "
+                                            "Click **Refresh** in the sidebar, then try the execution ID again. "
+                                            "Or paste the commit SHA directly from Cloud Manager."
+                                        )
+                            except Exception as _ce:
+                                st.error(f"Error: {_ce}")
+                _cleaned = _resolved_sha if _resolved_sha else ""
+
+        if _cleaned:
+            st.session_state["risk_commit_input"] = _cleaned
+            st.session_state.pop("risk_dev_exec", None)
+            st.session_state.pop("risk_report", None)
+            st.session_state["risk_scroll_to_analysis"] = True
+            st.rerun()
 
     # ── Handle selected Dev execution ─────────────────────────────────────────
     _sel_exec   = st.session_state.get("risk_dev_exec", "")
@@ -2165,6 +2998,102 @@ elif page == "Risk Assessment":
                 unsafe_allow_html=True,
             )
 
+        # RUNNING → try git tag lookup first (CM writes the tag at build start)
+        # Only fall back to "paste SHA" message if tag not found yet
+        elif _sel_status == "RUNNING":
+            _running_sha = ""
+            _git_dir_r = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
+            if _sel_exec and _git_dir_r:
+                try:
+                    import subprocess as _sp_run
+                    _t = _sp_run.run(
+                        ["git", "tag", "--list", f"*{_sel_exec}*"],
+                        cwd=_git_dir_r, capture_output=True, text=True, timeout=5,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                    ).stdout.strip()
+                    if _t:
+                        _sha_r = _sp_run.run(
+                            ["git", "rev-list", "-n", "1", _t.splitlines()[0].strip()],
+                            cwd=_git_dir_r, capture_output=True, text=True, timeout=5,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                        ).stdout.strip()
+                        if _sha_r and len(_sha_r) >= 40:
+                            _running_sha = _sha_r
+                            st.session_state["risk_commit_input"] = _running_sha
+                except Exception:
+                    pass
+
+            if _running_sha:
+                # SHA found via git tag — run the assessment directly here.
+                # Cannot "fall through" to the FINISHED elif (elif already matched RUNNING).
+                st.markdown(
+                    f'<div style="background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.3);'
+                    f'border-left:4px solid {T["blue"]};border-radius:6px;padding:10px 14px;margin:8px 0">'
+                    f'<p style="font-size:0.83rem;color:{T["blue"]};font-weight:600;margin:0">'
+                    f'Pipeline is currently running — SHA found from git tag, assessing now.</p>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                with ai_analyzing_loader(f"Analysing build risk for running pipeline ({_running_sha[:8]}…)"):
+                    try:
+                        _cust_git_dir_r = _active_customer.get("git_local_dir","") or os.getenv("GIT_LOCAL_DIR","")
+                        if _cust_git_dir_r:
+                            os.environ["GIT_LOCAL_DIR"] = _cust_git_dir_r
+                        from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
+                        from analysis.ingest import build_base_bundle
+                        if "risk_base_bundle" not in st.session_state:
+                            _rb_r, _, _, _ = build_base_bundle(fetch_logs=False)
+                            st.session_state["risk_base_bundle"] = _rb_r
+                        _bundle_r = st.session_state["risk_base_bundle"]
+                        _bundle_r.__dict__["git_local_dir"] = _cust_git_dir_r
+                        _bundle_r.__dict__["customer_name"] = st.session_state.get("selected_customer","")
+                        _bundle_r.__dict__["dev_execution_status"] = "RUNNING"
+                        _bundle_r.__dict__["dev_execution_id"] = str(_sel_exec or "")
+                        _, _rep_r, _md_r = run_pre_deploy_risk(
+                            commit_sha=_running_sha, fetch_logs=False, use_llm=True, bundle=_bundle_r
+                        )
+                        save_risk_report(_rep_r, _md_r, commit_sha=_running_sha,
+                                         program_id=_active_customer.get("program_id",""),
+                                         customer=_active_customer.get("short",""))
+                        _rr = _rep_r.model_dump(mode="json")
+                        if hasattr(_rep_r,"__dict__") and _rep_r.__dict__.get("similar_incidents_raw"):
+                            _rr["similar_incidents"] = _rep_r.__dict__["similar_incidents_raw"]
+                        if hasattr(_rep_r,"__dict__") and _rep_r.__dict__.get("risk_decision"):
+                            _dr = _rep_r.__dict__["risk_decision"]
+                            _rr["_env_signal"]  = {"status":_dr.env.status,"score":_dr.env.score,"consecutive_failures":_dr.env.consecutive_failures,"dominant_step":_dr.env.dominant_step,"last_success_ago":_dr.env.last_success_ago,"detail":_dr.env.detail,"fix":_dr.env.fix,"failure_probability":_dr.env.failure_probability,"is_persistent_infra":getattr(_dr.env,"is_persistent_infra",False),"is_env_issue":getattr(_dr.env,"is_env_issue",False),"hold_threshold":getattr(_dr.env,"hold_threshold",3),"env_step_failure_count":getattr(_dr.env,"env_step_failure_count",0)}
+                            _rr["_code_signal"] = {"level":_dr.code.level,"score":_dr.code.score,"detail":_dr.code.detail,"findings":_dr.code.findings}
+                            _rr["_hist_signal"] = {"score":_dr.historical.score,"match_count":_dr.historical.match_count,"dominant_step":_dr.historical.dominant_step,"detail":_dr.historical.detail}
+                            _rr["_recommendation"] = _dr.recommendation
+                            _rr["_confidence_basis"] = _dr.confidence_basis
+                            _rr["_expected_outcome"] = _dr.expected_outcome
+                            _rr["_code_recommendation"]   = _rep_r.__dict__.get("_code_recommendation","")
+                            _rr["_code_confidence"]       = _rep_r.__dict__.get("_code_confidence",0.0)
+                            _rr["_code_confidence_basis"] = _rep_r.__dict__.get("_code_confidence_basis","")
+                        if _bundle_r.git_context:
+                            st.session_state["risk_git_changed_files"] = _bundle_r.git_context.changed_files or []
+                            st.session_state["risk_git_title"]  = _bundle_r.git_context.title or ""
+                            st.session_state["risk_git_author"] = _bundle_r.git_context.author or ""
+                            st.session_state["risk_git_date"]   = _bundle_r.git_context.commit_date or ""
+                            st.session_state["risk_git_diff"]   = (_bundle_r.git_context.diff_excerpt or "")[:5000]
+                        st.session_state["risk_report"] = _rr
+                    except Exception as _e_r:
+                        st.error(f"Assessment failed: {_e_r}")
+                st.rerun()
+            else:
+                st.markdown(
+                    f'<div style="background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.3);'
+                    f'border-left:4px solid {T["blue"]};border-radius:6px;padding:14px 18px;margin:8px 0">'
+                    f'<p style="font-size:0.88rem;font-weight:700;color:{T["blue"]};margin:0 0 6px 0">'
+                    f'Pipeline is currently running</p>'
+                    f'<p style="font-size:0.78rem;color:{T["text"]};margin:0 0 8px 0">'
+                    f'The git tag is not available yet. Open the execution in Cloud Manager, '
+                    f'go to Build &amp; Unit Testing, copy the SHA next to '
+                    f'<code style="background:{T["surface"]};padding:1px 5px;border-radius:3px">COMMIT:</code> '
+                    f'and paste it into the input field below.</p>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
         # CANCELLED → warn, ask for commit SHA
         elif _sel_status == "CANCELLED":
             st.markdown(
@@ -2186,6 +3115,30 @@ elif page == "Risk Assessment":
             import re as _re_sha0
             if _auto_sha and not _re_sha0.match(r"^[0-9a-f]{7,}", _auto_sha.lower()):
                 _auto_sha = ""
+
+            # Step 1b: git tag lookup using execution ID — most accurate, no API needed
+            # CM writes tag: 2026.630.141604.0008505992 → points to exact SHA built
+            if not _auto_sha and _sel_exec:
+                try:
+                    import subprocess as _sp_tag2
+                    _git_dir2 = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
+                    if _git_dir2:
+                        _tag_out2 = _sp_tag2.run(
+                            ["git", "tag", "--list", f"*{_sel_exec}*"],
+                            cwd=_git_dir2, capture_output=True, text=True, timeout=5,
+                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                        ).stdout.strip()
+                        if _tag_out2:
+                            _sha_from_tag = _sp_tag2.run(
+                                ["git", "rev-list", "-n", "1", _tag_out2.splitlines()[0].strip()],
+                                cwd=_git_dir2, capture_output=True, text=True, timeout=5,
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                            ).stdout.strip()
+                            if _sha_from_tag and len(_sha_from_tag) >= 40:
+                                _auto_sha = _sha_from_tag
+                                st.session_state["risk_commit_input"] = _auto_sha
+                except Exception:
+                    pass
 
             # Step 2: try Azure build log — contains "git checkout {SHA}"
             if not _auto_sha:
@@ -2243,31 +3196,168 @@ elif page == "Risk Assessment":
                 unsafe_allow_html=True,
             )
             if "risk_report" not in st.session_state:
-                with st.spinner(f"Assessing Production risk for {_auto_sha[:8]}..."):
+                with ai_analyzing_loader():
+                        _status_slot = st.empty()
+                        def _status(msg: str):
+                            _status_slot.markdown(
+                                f'<p style="font-size:0.75rem;color:{T["text_muted"]};'
+                                f'text-align:center;margin:4px 0">{msg}</p>',
+                                unsafe_allow_html=True,
+                            )
                         try:
                             # Force correct repo dir for this customer before any git calls
                             _cust_git_dir = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
                             if _cust_git_dir:
                                 os.environ["GIT_LOCAL_DIR"] = _cust_git_dir
+                            # Also set GIT_BRANCH so clone_or_update fast-forwards the right branch
+                            _cust_git_branch = _active_customer.get("git_branch", "")
+                            if _cust_git_branch:
+                                os.environ["GIT_BRANCH"] = _cust_git_branch
                             from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
-                            from analysis.ingest import build_base_bundle
+                            from analysis.ingest import build_base_bundle, _cache_is_fresh
+                            _pid_int = int(_active_customer.get("program_id", 0) or 0)
                             if "risk_base_bundle" not in st.session_state:
+                                _is_cached = _pid_int and _cache_is_fresh(_pid_int)
+                                _status("Fetching pipeline history from Splunk…" if not _is_cached else "Loading pipeline history from cache…")
                                 _base_bundle, _, _, _ = build_base_bundle(fetch_logs=False)
                                 st.session_state["risk_base_bundle"] = _base_bundle
                             else:
                                 _base_bundle = st.session_state["risk_base_bundle"]
-                            # Inject customer-specific git dir
+                            # Inject customer-specific context
                             _base_bundle.__dict__["git_local_dir"] = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
-                            _, report, md = run_pre_deploy_risk(
-                                commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
-                                bundle=_base_bundle,
-                            )
-                            save_risk_report(report, md, commit_sha=_auto_sha)
+                            _base_bundle.__dict__["customer_name"] = st.session_state.get("selected_customer", "")
+                            _base_bundle.__dict__["dev_execution_status"] = _sel_status if _sel_exec else ""
+                            _base_bundle.__dict__["dev_execution_id"] = str(_sel_exec or "")
+                            try:
+                                from analysis.risk_scorer import infer_java_upgrade_pending
+                                _base_bundle.__dict__["java_upgrade_pending"] = infer_java_upgrade_pending(
+                                    {}, pipeline_df, str(_sel_exec or ""),
+                                )
+                            except Exception:
+                                _base_bundle.__dict__["java_upgrade_pending"] = False
+                            _exec_date = ""
+                            if _sel_exec and not pipeline_df.empty:
+                                _exec_row = pipeline_df[pipeline_df["executionId"].astype(str) == str(_sel_exec)]
+                                if not _exec_row.empty:
+                                    _exec_date = str(_exec_row.iloc[0].get("Deploy Start Time", ""))[:10]
+                            _base_bundle.__dict__["execution_date"] = _exec_date
+                            # Pre-check: does this SHA exist in the local repo?
+                            # If not, a git fetch is needed — tell the user explicitly
+                            # so they don't stare at a spinner wondering what's happening.
+                            try:
+                                from connectors.git_connector import _sha_exists, _local_dir
+                                _repo_for_check = _cust_git_dir or _local_dir()
+                                if _repo_for_check and not _sha_exists(_auto_sha, _repo_for_check):
+                                    _status(f"SHA {_auto_sha[:12]} not in local repo — fetching from remote (up to 30s)…")
+                            except Exception:
+                                pass
+
+                            _status("Analysing diff and running structural checks…")
+                            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TE2
+                            _TIMEOUT = int(os.getenv("ANALYSIS_TIMEOUT_SEC", "180"))
+                            _report_result = [None, None, None]
+                            def _run_analysis():
+                                _r2 = run_pre_deploy_risk(
+                                    commit_sha=_auto_sha, fetch_logs=False,
+                                    use_llm=True, bundle=_base_bundle,
+                                )
+                                _report_result[:] = list(_r2)
+                            with ThreadPoolExecutor(max_workers=1) as _ex2:
+                                _fut2 = _ex2.submit(_run_analysis)
+                                try:
+                                    _fut2.result(timeout=_TIMEOUT)
+                                except _TE2:
+                                    st.markdown(
+                                        f'<div style="background:#FEF3C7;border-left:4px solid {T["amber"]};'
+                                        f'border-radius:8px;padding:14px 18px;margin:8px 0">'
+                                        f'<p style="font-size:0.88rem;font-weight:700;color:#92400E;margin:0 0 6px">⏱ Analysis timed out</p>'
+                                        f'<p style="font-size:0.78rem;color:#78350F;margin:0 0 10px">'
+                                        f'Took longer than {_TIMEOUT}s. This happens when the LLM is slow or the diff is very large.</p>'
+                                        f'</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                    if st.button("↺ Retry", type="primary", key=f"retry_timeout_{_auto_sha[:8]}"):
+                                        st.session_state.pop("risk_report", None)
+                                        st.session_state.pop("risk_base_bundle", None)
+                                        st.rerun()
+                                    st.stop()
+                            _, report, md = _report_result[0], _report_result[1], _report_result[2]
+                            if report is None:
+                                st.error("Analysis returned no result — try again.")
+                                st.stop()
+                            _status("Saving results…")
+                            save_risk_report(report, md, commit_sha=_auto_sha,
+                                             program_id=_active_customer.get("program_id",""),
+                                             customer=_active_customer.get("short", st.session_state.get("selected_customer","")))
                             _r = report.model_dump(mode="json")
+                            if hasattr(report, '__dict__') and report.__dict__.get("similar_incidents_raw"):
+                                _r["similar_incidents"] = report.__dict__["similar_incidents_raw"]
+                            # Store pre-computed signals so display uses correct inputs
+                            if hasattr(report, '__dict__') and report.__dict__.get("risk_decision"):
+                                _d = report.__dict__["risk_decision"]
+                                _r["_env_signal"]  = {"status": _d.env.status, "score": _d.env.score, "consecutive_failures": _d.env.consecutive_failures, "dominant_step": _d.env.dominant_step, "last_success_ago": _d.env.last_success_ago, "detail": _d.env.detail, "fix": _d.env.fix, "failure_probability": _d.env.failure_probability, "is_persistent_infra": getattr(_d.env, "is_persistent_infra", False), "is_env_issue": getattr(_d.env, "is_env_issue", False), "hold_threshold": getattr(_d.env, "hold_threshold", 3), "env_step_failure_count": getattr(_d.env, "env_step_failure_count", 0)}
+                                _r["_code_signal"] = {"level": _d.code.level, "score": _d.code.score, "detail": _d.code.detail, "findings": _d.code.findings}
+                                _r["_hist_signal"] = {"score": _d.historical.score, "match_count": _d.historical.match_count, "dominant_step": _d.historical.dominant_step, "detail": _d.historical.detail}
+                                _r["_llm_signal"]   = {"score": _d.llm.score, "commit_risk_step": _d.llm.commit_risk_step, "dominant_step": _d.llm.dominant_step, "detail": _d.llm.detail, "has_analysis": _d.llm.has_analysis}
+                                _r["_recommendation"] = _d.recommendation
+                                _r["_confidence_basis"] = _d.confidence_basis
+                                _r["_expected_outcome"] = _d.expected_outcome
+                                # Code-only recommendation — never blended with env
+                                _r["_code_recommendation"]   = report.__dict__.get("_code_recommendation", "")
+                                _r["_code_confidence"]       = report.__dict__.get("_code_confidence", 0.0)
+                                _r["_code_confidence_basis"] = report.__dict__.get("_code_confidence_basis", "")
+                            # Structural override path: risk_decision absent but _code_recommendation
+                            # may still be set directly. Pick it up here.
+                            if not _r.get("_code_recommendation") and hasattr(report, "__dict__"):
+                                if report.__dict__.get("_code_recommendation"):
+                                    _r["_code_recommendation"]   = report.__dict__["_code_recommendation"]
+                                    _r["_code_confidence"]       = report.__dict__.get("_code_confidence", 0.0)
+                                    _r["_code_confidence_basis"] = report.__dict__.get("_code_confidence_basis", "")
+                            # Structural override: use _code_signal_override (has correct findings)
+                            # over the default _code_signal (which shows subtree=LOW regardless)
+                            if not _r.get("_code_signal") and hasattr(report, "__dict__"):
+                                _cso = report.__dict__.get("_code_signal_override")
+                                if _cso:
+                                    _r["_code_signal"] = _cso
+                            # Structural override: also serialize env signal from raw env dict
+                            if not _r.get("_env_signal") and hasattr(report, "__dict__"):
+                                _env_raw = report.__dict__.get("_env_signal_raw")
+                                if _env_raw:
+                                    _r["_env_signal"] = {
+                                        "status": _env_raw.get("status","UNKNOWN"),
+                                        "score": _env_raw.get("env_step_failure_count",0) / 10.0,
+                                        "consecutive_failures": _env_raw.get("consecutive_failures",0),
+                                        "dominant_step": _env_raw.get("dominant_step",""),
+                                        "last_success_ago": _env_raw.get("last_success_ago","unknown"),
+                                        "detail": _env_raw.get("recommendation","")[:80],
+                                        "fix": "", "failure_probability": _env_raw.get("env_step_failure_count",0)/10.0,
+                                        "is_persistent_infra": False,
+                                        "is_env_issue": _env_raw.get("is_env_issue", False),
+                                        "hold_threshold": 3,
+                                        "env_step_failure_count": _env_raw.get("env_step_failure_count", 0),
+                                    }
+                            # Store git context for display and code signal inputs
+                            if _base_bundle.git_context:
+                                st.session_state["risk_git_changed_files"] = _base_bundle.git_context.changed_files or []
+                                st.session_state["risk_git_title"]  = _base_bundle.git_context.title or ""
+                                st.session_state["risk_git_author"] = _base_bundle.git_context.author or ""
+                                st.session_state["risk_git_date"]   = _base_bundle.git_context.commit_date or ""
+                                st.session_state["risk_git_diff"]   = (_base_bundle.git_context.diff_excerpt or "")[:5000]
                             st.session_state["risk_report"] = _r
-                            # Save prediction as PENDING — will be resolved when actual outcome arrives
+                            # Save prediction as PENDING — scorer-driven values
                             try:
                                 from analysis.prediction_store import save_prediction
+                                _dec = report.__dict__.get("risk_decision")
+                                _top_factors = []
+                                if _dec:
+                                    _top_factors = [
+                                        _dec.confidence_basis,
+                                        f"driver={_dec.primary_driver}",
+                                        f"env={_dec.env.status}({_dec.env.consecutive_failures}x)",
+                                        f"code={_dec.code.level}",
+                                        f"hist={int(_dec.historical.score*100)}%",
+                                        *(_dec.code.findings[:2]),
+                                    ]
                                 save_prediction(
                                     commit_sha=_auto_sha,
                                     predicted_risk=getattr(report, "risk_level", ""),
@@ -2278,12 +3368,100 @@ elif page == "Risk Assessment":
                                     tenant_id=_active_customer.get("tenant_id", ""),
                                     pipeline_name="Production Pipeline",
                                     modules_at_risk=getattr(report, "modules_at_risk", []) or [],
+                                    top_factors=[f for f in _top_factors if f],
+                                    env_prediction={
+                                        "step": _dec.env.dominant_step if _dec else "",
+                                        "status": _dec.env.status if _dec else "",
+                                        "p_fail": _dec.env.failure_probability if _dec else 0,
+                                    } if _dec else {},
+                                    commit_prediction={
+                                        "level": _dec.code.level if _dec else "",
+                                        "p_fail": _dec.code.score if _dec else 0,
+                                    } if _dec else {},
+                                    primary_driver=_dec.primary_driver if _dec else "llm",
                                 )
                             except Exception:
                                 pass
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Assessment failed: {e}")
+                            _err_str = str(e)
+                            _is_sha_not_found = (
+                                "not found in local repo" in _err_str
+                                or "not found in" in _err_str
+                                or "SHA" in _err_str and "not found" in _err_str
+                            )
+                            _is_timeout = "timeout" in _err_str.lower() or "timed out" in _err_str.lower()
+
+                            if _is_sha_not_found or _is_timeout:
+                                # Clear, actionable message — not a raw Python traceback
+                                if _is_timeout:
+                                    st.markdown(
+                                        f'<div style="background:#FEF3C7;border-left:4px solid {T["amber"]};'
+                                        f'border-radius:8px;padding:14px 18px;margin:8px 0">'
+                                        f'<p style="font-size:0.88rem;font-weight:700;color:#92400E;margin:0 0 6px 0">'
+                                        f'⏱ Fetch timed out</p>'
+                                        f'<p style="font-size:0.78rem;color:#78350F;margin:0 0 10px 0">'
+                                        f'SHA <code>{_auto_sha[:12]}</code> was not in the local repo and the remote fetch '
+                                        f'timed out after 30 seconds. This happens when the remote git server is slow '
+                                        f'or unreachable.</p>'
+                                        f'<p style="font-size:0.75rem;color:#92400E;margin:0">'
+                                        f'Try again — it usually succeeds on retry.</p>'
+                                        f'</div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                else:
+                                    st.markdown(
+                                        f'<div style="background:#FEF3C7;border-left:4px solid {T["amber"]};'
+                                        f'border-radius:8px;padding:14px 18px;margin:8px 0">'
+                                        f'<p style="font-size:0.88rem;font-weight:700;color:#92400E;margin:0 0 6px 0">'
+                                        f'⚠ Commit not found in local repo</p>'
+                                        f'<p style="font-size:0.78rem;color:#78350F;margin:0 0 10px 0">'
+                                        f'SHA <code>{_auto_sha[:12]}</code> is not in the local clone. '
+                                        f'It may be on a branch that hasn\'t been fetched yet.</p>'
+                                        f'</div>',
+                                        unsafe_allow_html=True,
+                                    )
+
+                                col_retry, col_clear = st.columns([1, 3])
+                                with col_retry:
+                                    if st.button("↺ Retry", type="primary", key=f"retry_sha_{_auto_sha[:8]}"):
+                                        st.session_state.pop("risk_report", None)
+                                        st.session_state.pop("risk_base_bundle", None)
+                                        st.rerun()
+                            else:
+                                st.error(f"Assessment failed: {_err_str}")
+
+                            if (_is_sha_not_found and not _is_timeout) or (not _is_sha_not_found and not _is_timeout):
+                                _eu = _active_customer.get("git_url","")
+                                _eo = _eu.rstrip("/").split("/")[-2] if _eu else ""
+                                _eb = f"https://git.cloudmanager.adobe.com/{_eo}/" if _eo else ""
+                                st.markdown(
+                                    f'<div style="background:{T["surface2"]};border:1px solid {T["amber"]}44;'
+                                    f'border-left:4px solid {T["amber"]};border-radius:8px;padding:12px 16px;margin:8px 0">'
+                                    f'<p style="font-size:0.78rem;font-weight:600;color:{T["text"]};margin:0 0 4px 0">'
+                                    f'This commit is from a different repository</p>'
+                                    f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0">'
+                                    f'Enter the repo name below and Argus will clone it automatically.</p></div>',
+                                    unsafe_allow_html=True,
+                                )
+                                with st.form(f"add_repo_sha_err_{_auto_sha[:8]}", clear_on_submit=True):
+                                    _ri_e = st.text_input("Repository name", placeholder="b86-hdfcformsmaster",
+                                                          help=f"Will be cloned from {_eb}<name>/")
+                                    _ae = st.form_submit_button("Clone and retry", type="primary")
+                                if _ae and _ri_e.strip():
+                                    _rb_e = os.getenv("REPOS_BASE_DIR", str(Path.home() / "projects"))
+                                    _xl_e = f"{_rb_e}/{_ri_e.strip()}"
+                                    _xurl_e = f"{_eb}{_ri_e.strip()}/".replace("https://", f"https://{_active_customer.get('git_username','')}:{_active_customer.get('git_password','')}@")
+                                    with st.spinner(f"Cloning {_ri_e.strip()}..."):
+                                        import subprocess as _spe2
+                                        Path(_xl_e).mkdir(parents=True, exist_ok=True)
+                                        _cr_e = _spe2.run(["git","clone",_xurl_e,_xl_e], capture_output=True, text=True, timeout=300, env={**os.environ,"GIT_TERMINAL_PROMPT":"0"})
+                                        if _cr_e.returncode == 0 or "already exists" in _cr_e.stderr:
+                                            os.environ["GIT_LOCAL_DIR"] = _xl_e
+                                            st.session_state.pop("risk_report", None)
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Clone failed: {_cr_e.stderr[:200]}")
 
     # ── Git commit flow (no dev exec selected, commit clicked from table or pasted) ──
     _auto_sha = st.session_state.get("risk_commit_input", "")
@@ -2291,33 +3469,44 @@ elif page == "Risk Assessment":
     if _auto_sha and not _re_sha2.match(r"^[0-9a-f]{7,}", _auto_sha.lower()):
         _auto_sha = ""
     if _auto_sha and not _sel_exec and "risk_report" not in st.session_state:
-        st.markdown(
-            f'<div style="background:rgba(201,137,0,0.07);border:1px solid rgba(201,137,0,0.3);'
-            f'border-left:4px solid {T["amber"]};border-radius:6px;padding:10px 14px;margin:8px 0">'
-            f'<p style="font-size:0.82rem;color:{T["amber"]};margin:0">'
-            f'⚠ Code-based estimate only — dev pipeline not run. '
-            f'Build outcome unknown. Confidence will be lower.</p>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        with st.spinner(f"Analysing commit {_auto_sha[:8]}..."):
+        with ai_analyzing_loader(
+            f"AI is analyzing commit {_auto_sha[:8]}… (may take 20–40s for submodule analysis)"
+        ):
             try:
                 # Force correct repo dir for this customer before any git calls
                 _git_dir = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
                 if _git_dir:
                     os.environ["GIT_LOCAL_DIR"] = _git_dir
-                # Verify the SHA exists in the local repo and has actual file changes
+                # Verify the SHA exists — check main repo AND all additional repos
                 from connectors.git_connector import get_commit_diff as _gcd
-                _pre_diff = _gcd(_git_dir, _auto_sha)
-                if not _pre_diff.get("changed_files"):
-                    st.error(
-                        f"**Cannot assess SHA `{_auto_sha[:12]}...`** — "
-                        f"no files found in the local git clone for this commit.\n\n"
-                        f"This usually means the repository for **{st.session_state.get('selected_customer', '')}** "
-                        f"is not cloned at `{_git_dir}` or this SHA does not exist in that repo.\n\n"
-                        f"Check that `{_active_customer.get('short', '')}_GIT_LOCAL_DIR` "
-                        f"is set correctly in `.env`."
-                    )
+                _pre_diff = None
+                _found_git_dir = _git_dir
+
+                # Build list of all repos to try
+                _all_dirs_to_try = [_git_dir] if _git_dir else []
+                try:
+                    _rc2 = json.loads(Path("data/repo_config.json").read_text())
+                    _cname2 = st.session_state.get("selected_customer", "")
+                    for _ar2 in _rc2.get(_cname2, {}).get("additional_repos", []):
+                        _ald2 = _ar2.get("local_dir", "")
+                        if _ald2 and _ald2 not in _all_dirs_to_try and Path(_ald2).exists():
+                            _all_dirs_to_try.append(_ald2)
+                except Exception:
+                    pass
+
+                for _try_dir in _all_dirs_to_try:
+                    try:
+                        _attempt = _gcd(_try_dir, _auto_sha)
+                        if _attempt.get("changed_files"):
+                            _pre_diff = _attempt
+                            _found_git_dir = _try_dir
+                            if _try_dir != _git_dir:
+                                os.environ["GIT_LOCAL_DIR"] = _try_dir
+                            break
+                    except Exception:
+                        continue
+
+                if not _pre_diff or not _pre_diff.get("changed_files"):
                     st.stop()
                 from analysis.risk_analyzer import run_pre_deploy_risk, save_risk_report
                 from analysis.ingest import build_base_bundle
@@ -2326,16 +3515,84 @@ elif page == "Risk Assessment":
                     st.session_state["risk_base_bundle"] = _base_bundle
                 else:
                     _base_bundle = st.session_state["risk_base_bundle"]
-                # Inject customer-specific git dir so risk_analyzer uses the right repo
-                _base_bundle.__dict__["git_local_dir"] = _git_dir
-                _, report, md = run_pre_deploy_risk(
-                    commit_sha=_auto_sha, fetch_logs=False, use_llm=True,
-                    bundle=_base_bundle,
-                )
-                save_risk_report(report, md, commit_sha=_auto_sha)
-                st.session_state["risk_report"] = report.model_dump(mode="json")
+                # Inject customer-specific context — use whichever repo the SHA was found in
+                _base_bundle.__dict__["git_local_dir"] = _found_git_dir
+                _base_bundle.__dict__["customer_name"] = st.session_state.get("selected_customer", "")
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TE
+                _ANALYSIS_TIMEOUT = int(os.getenv("ANALYSIS_TIMEOUT_SEC", "180"))
+                with ThreadPoolExecutor(max_workers=1) as _ex:
+                    _fut = _ex.submit(run_pre_deploy_risk,
+                                      commit_sha=_auto_sha, fetch_logs=False,
+                                      use_llm=True, bundle=_base_bundle)
+                    try:
+                        _, report, md = _fut.result(timeout=_ANALYSIS_TIMEOUT)
+                    except _TE:
+                        st.error(f"Analysis timed out after {_ANALYSIS_TIMEOUT}s. "
+                                 f"Try again — submodule repos may need fetching.")
+                        st.stop()
+                save_risk_report(report, md, commit_sha=_auto_sha,
+                                 program_id=_active_customer.get("program_id",""),
+                                 customer=_active_customer.get("short", st.session_state.get("selected_customer","")))
+                _r3 = report.model_dump(mode="json")
+                if hasattr(report, '__dict__') and report.__dict__.get("similar_incidents_raw"):
+                    _r3["similar_incidents"] = report.__dict__["similar_incidents_raw"]
+                if hasattr(report, '__dict__') and report.__dict__.get("risk_decision"):
+                    _d3 = report.__dict__["risk_decision"]
+                    _r3["_env_signal"]       = {"status": _d3.env.status, "score": _d3.env.score, "consecutive_failures": _d3.env.consecutive_failures, "dominant_step": _d3.env.dominant_step, "last_success_ago": _d3.env.last_success_ago, "detail": _d3.env.detail, "fix": _d3.env.fix, "failure_probability": _d3.env.failure_probability, "is_persistent_infra": getattr(_d3.env, "is_persistent_infra", False), "is_env_issue": getattr(_d3.env, "is_env_issue", False), "hold_threshold": getattr(_d3.env, "hold_threshold", 3), "env_step_failure_count": getattr(_d3.env, "env_step_failure_count", 0)}
+                    _r3["_code_signal"]      = {"level": _d3.code.level, "score": _d3.code.score, "detail": _d3.code.detail, "findings": _d3.code.findings}
+                    _r3["_hist_signal"]      = {"score": _d3.historical.score, "match_count": _d3.historical.match_count, "dominant_step": _d3.historical.dominant_step, "detail": _d3.historical.detail}
+                    _r3["_llm_signal"]       = {"score": _d3.llm.score, "commit_risk_step": _d3.llm.commit_risk_step, "dominant_step": _d3.llm.dominant_step, "detail": _d3.llm.detail, "has_analysis": _d3.llm.has_analysis}
+                    _r3["_recommendation"]   = _d3.recommendation
+                    _r3["_confidence_basis"] = _d3.confidence_basis
+                    _r3["_expected_outcome"] = _d3.expected_outcome
+                    _r3["_code_recommendation"]   = report.__dict__.get("_code_recommendation", "")
+                    _r3["_code_confidence"]       = report.__dict__.get("_code_confidence", 0.0)
+                    _r3["_code_confidence_basis"] = report.__dict__.get("_code_confidence_basis", "")
+                if not _r3.get("_code_recommendation") and hasattr(report, "__dict__"):
+                    if report.__dict__.get("_code_recommendation"):
+                        _r3["_code_recommendation"]   = report.__dict__["_code_recommendation"]
+                        _r3["_code_confidence"]       = report.__dict__.get("_code_confidence", 0.0)
+                        _r3["_code_confidence_basis"] = report.__dict__.get("_code_confidence_basis", "")
+                if not _r3.get("_code_signal") and hasattr(report, "__dict__"):
+                    _cso3 = report.__dict__.get("_code_signal_override")
+                    if _cso3:
+                        _r3["_code_signal"] = _cso3
+                if not _r3.get("_env_signal") and hasattr(report, "__dict__"):
+                    _env_raw3 = report.__dict__.get("_env_signal_raw")
+                    if _env_raw3:
+                        _r3["_env_signal"] = {
+                            "status": _env_raw3.get("status","UNKNOWN"),
+                            "score": _env_raw3.get("env_step_failure_count",0) / 10.0,
+                            "consecutive_failures": _env_raw3.get("consecutive_failures",0),
+                            "dominant_step": _env_raw3.get("dominant_step",""),
+                            "last_success_ago": _env_raw3.get("last_success_ago","unknown"),
+                            "detail": _env_raw3.get("recommendation","")[:80],
+                            "fix": "", "failure_probability": _env_raw3.get("env_step_failure_count",0)/10.0,
+                            "is_persistent_infra": False,
+                            "is_env_issue": _env_raw3.get("is_env_issue", False),
+                            "hold_threshold": 3,
+                            "env_step_failure_count": _env_raw3.get("env_step_failure_count", 0),
+                        }
+                if _base_bundle.git_context:
+                    st.session_state["risk_git_changed_files"] = _base_bundle.git_context.changed_files or []
+                    st.session_state["risk_git_title"]  = _base_bundle.git_context.title or ""
+                    st.session_state["risk_git_author"] = _base_bundle.git_context.author or ""
+                    st.session_state["risk_git_date"]   = _base_bundle.git_context.commit_date or ""
+                    st.session_state["risk_git_diff"]   = (_base_bundle.git_context.diff_excerpt or "")[:5000]
+                st.session_state["risk_report"] = _r3
                 try:
                     from analysis.prediction_store import save_prediction
+                    _dec2 = report.__dict__.get("risk_decision")
+                    _top2 = []
+                    if _dec2:
+                        _top2 = [
+                            _dec2.confidence_basis,
+                            f"driver={_dec2.primary_driver}",
+                            f"env={_dec2.env.status}({_dec2.env.consecutive_failures}x)",
+                            f"code={_dec2.code.level}",
+                            f"hist={int(_dec2.historical.score*100)}%",
+                            *(_dec2.code.findings[:2]),
+                        ]
                     save_prediction(
                         commit_sha=_auto_sha,
                         predicted_risk=getattr(report, "risk_level", ""),
@@ -2346,6 +3603,17 @@ elif page == "Risk Assessment":
                         tenant_id=_active_customer.get("tenant_id", ""),
                         pipeline_name="",
                         modules_at_risk=getattr(report, "modules_at_risk", []) or [],
+                        top_factors=[f for f in _top2 if f],
+                        env_prediction={
+                            "step": _dec2.env.dominant_step if _dec2 else "",
+                            "status": _dec2.env.status if _dec2 else "",
+                            "p_fail": _dec2.env.failure_probability if _dec2 else 0,
+                        } if _dec2 else {},
+                        commit_prediction={
+                            "level": _dec2.code.level if _dec2 else "",
+                            "p_fail": _dec2.code.score if _dec2 else 0,
+                        } if _dec2 else {},
+                        primary_driver=_dec2.primary_driver if _dec2 else "llm",
                     )
                 except Exception:
                     pass
@@ -2372,12 +3640,25 @@ elif page == "Risk Assessment":
 
         # ── Commit metadata strip ─────────────────────────────────────────────
         _sha = r.get("commit_sha") or st.session_state.get("risk_commit_input", "") or ""
+        _meta = None
         try:
             from connectors.git_connector import get_recent_commits
-            _all_commits = get_recent_commits(n=30)
+            _all_commits = get_recent_commits(branch=_active_customer.get("git_branch",""), n=30)
             _meta = next((c for c in _all_commits if c["sha"].startswith(_sha[:8])), None)
         except Exception:
-            _meta = None
+            pass
+        # Fallback: use git context stored during analysis (works for any SHA)
+        if not _meta:
+            _stored_title  = st.session_state.get("risk_git_title", "")
+            _stored_author = st.session_state.get("risk_git_author", "")
+            _stored_date   = st.session_state.get("risk_git_date", "")
+            if _stored_title or _stored_author:
+                _meta = {
+                    "sha":    _sha,
+                    "title":  _stored_title or "—",
+                    "author": _stored_author or "—",
+                    "when":   _stored_date or "—",
+                }
 
         # Get execution start time for the dev exec if selected
         _exec_start_time = ""
@@ -2427,116 +3708,859 @@ elif page == "Risk Assessment":
                 unsafe_allow_html=True,
             )
 
-        # ── ML prediction banner (no ChromaDB) ────────────────────────────────
-        _ml = r.get("ml_prediction") or st.session_state.get("ml_prediction")
-        if _ml:
-            _rec = _ml.get("promotion_recommendation", "HOLD")
-            _score = _ml.get("overall_risk_score", 0)
-            _rec_col = {"GO": T["green"], "HOLD": T["amber"], "NO_GO": T["red"]}.get(_rec, T["gray"])
-            _step_probs = _ml.get("step_probabilities", {})
-            _steps_html = " · ".join(f"{k}: {_step_probs[k]:.0%}" for k in _step_probs if k != "overall")
-            st.markdown(
-                f'<div style="background:{T["surface2"]};border:2px solid {_rec_col};'
-                f'border-radius:10px;padding:14px 18px;margin-bottom:12px">'
-                f'<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0 0 6px 0">ML Risk Score</p>'
-                f'<p style="font-size:1.6rem;font-weight:700;color:{_rec_col};margin:0 0 4px 0">'
-                f'{_score:.0%} — {_rec}</p>'
-                f'<p style="font-size:0.78rem;color:{T["text_sub"]};margin:0">{_steps_html}</p>'
-                f'</div>',
-                unsafe_allow_html=True,
+        # Disclaimer and duplicate standing env banner removed —
+        # replaced by signal transparency matrix and unified env advisory section below.
+
+        # ── Resolve signals (pre-computed or fallback recompute) ─────────────────
+        _cs_pre = r.get("_code_signal") or {}
+        if (_cs_pre.get("level") in ("HIGH","MEDIUM") and
+            "subtree import" in (_cs_pre.get("detail","") or "").lower()):
+            r.pop("_code_signal", None)
+
+        if r.get("_env_signal") and r.get("_code_signal") and r.get("_hist_signal"):
+            from analysis.risk_scorer import EnvSignal, CodeSignal, HistoricalSignal
+            _es = r["_env_signal"]
+            _cs = r["_code_signal"]
+            _hs = r["_hist_signal"]
+            _env_sig   = EnvSignal(**_es)
+            _cs_level  = _cs["level"]
+            _cs_score  = _cs["score"]
+            _cs_detail = _cs["detail"]
+            if "subtree import" in _cs_detail.lower() or "subtree" in _cs_detail.lower():
+                _cs_level = "LOW"
+                _cs_score = 0.15
+            _code_sig  = CodeSignal(level=_cs_level, score=_cs_score, detail=_cs_detail,
+                                    findings=_cs.get("findings",[]),
+                                    is_submodule_only=_cs_level=="LOW", has_real_code=_cs_level!="LOW")
+            _hist_sig  = HistoricalSignal(score=_hs["score"], match_count=_hs.get("match_count",0),
+                                          dominant_step=_hs.get("dominant_step",""), fail_rate=_hs["score"],
+                                          detail=_hs["detail"], examples=[])
+            _rec       = r.get("_recommendation", "CAUTION")
+            _conf_f    = (r.get("confidence_score", 50) or 50) / 100
+            _basis     = r.get("_confidence_basis", "scorer analysis")
+        else:
+            try:
+                from analysis.risk_scorer import (
+                    compute_env_signal, compute_code_signal,
+                    compute_historical_signal, make_decision
+                )
+                from analysis.ingest import load_data as _ld2
+                _pdf2, _fdf2, _, _ = _ld2()
+                _env_sig  = compute_env_signal(_pdf2, _fdf2)
+                _code_sig = compute_code_signal(
+                    diff_text     = st.session_state.get("risk_git_diff", "") or "",
+                    changed_files = st.session_state.get("risk_git_changed_files", []) or [],
+                    commit_title  = st.session_state.get("risk_git_title", "") or "",
+                )
+                _hist_sig = compute_historical_signal(r)
+                _rec, _outcome, _conf_f, _basis, _driver = make_decision(_env_sig, _code_sig, _hist_sig)
+            except Exception:
+                _rec    = {"High":"HOLD","Critical":"HOLD","Medium":"CAUTION","Low":"GO"}.get(r.get("risk_level",""), "CAUTION")
+                _conf_f = (r.get("confidence_score", 50) or 50) / 100
+                _basis  = "LLM analysis"
+                _step_risks_raw = r.get("step_risks") or []
+                _env_step  = next((s for s in _step_risks_raw if s.get("step") in ("securityTest","deploy","loadTest")), None)
+                _code_step = next((s for s in _step_risks_raw if s.get("step") in ("build","codeQuality")), None)
+                try:
+                    from analysis.risk_scorer import EnvSignal, CodeSignal, HistoricalSignal
+                    _env_lvl  = (_env_step.get("level","Low") if _env_step else "Low")
+                    _env_sig  = EnvSignal(
+                        status="READY" if _env_lvl == "Low" else "CAUTION",
+                        score={"Low":0.1,"Medium":0.4,"High":0.7}.get(_env_lvl,0.1),
+                        consecutive_failures=0,
+                        dominant_step=_env_step.get("step","") if _env_step else "",
+                        last_success_ago="unknown",
+                        detail=(_env_step.get("rationale","") or "Based on LLM analysis")[:80],
+                        fix="", failure_probability={"Low":0.1,"Medium":0.4,"High":0.7}.get(_env_lvl,0.1),
+                    )
+                    _code_lvl = (_code_step.get("level","Low") if _code_step else "Low")
+                    _code_sig = CodeSignal(
+                        level=_code_lvl,
+                        score={"Low":0.15,"Medium":0.5,"High":0.75}.get(_code_lvl,0.15),
+                        detail=(_code_step.get("rationale","") or r.get("narrative","Based on LLM analysis"))[:80],
+                        findings=[], is_submodule_only=False, has_real_code=True,
+                    )
+                    _hist_sig = None
+                except Exception:
+                    _env_sig = _code_sig = _hist_sig = None
+
+        # ── Derived display values ────────────────────────────────────────────
+        _code_lvl_cap = {"LOW": 0.25, "MEDIUM": 0.60, "HIGH": 0.85, "CERTAIN": 0.92}
+        _build_score  = _code_sig.score if _code_sig else 0.0
+        _build_score  = min(_build_score, _code_lvl_cap.get(_code_sig.level if _code_sig else "LOW", 0.25))
+        _build_level  = (_code_sig.level if _code_sig else "LOW")
+        _build_detail = (_code_sig.detail if _code_sig else "No code analysis available") or "—"
+        _build_findings = (_code_sig.findings if _code_sig else []) or []
+
+        _basis_label = {
+            "code":         "structural diff analysis",
+            "code+history": "structural diff + historical pattern",
+            "llm":          "LLM diff analysis",
+            "llm+code":     "LLM + structural analysis",
+            "none":         "no failure patterns detected",
+        }.get(r.get("primary_driver",""), _basis or "scorer analysis")
+
+        # ── Build + environment summary cards (code-only vs live env check) ───
+
+        # ── Hero verdict: best available build signal ────────────────────────
+        # Precedence (highest → lowest):
+        #   1. Structural code findings (HIGH/CERTAIN → HOLD, MEDIUM → CAUTION)
+        #   2. LLM build step risk from step_risks (most comprehensive: rule_scores
+        #      + historical ChromaDB + full diff — this is why Step Risk Summary
+        #      is more accurate than a code-only verdict)
+        #   3. Scorer blended recommendation when driven by code/history
+        #   4. Code-only recommendation (fallback)
+        # Exception: when scorer verdict is env-only driven, hero always shows
+        # code-only verdict — env advisory handles env risk separately.
+        _primary_driver = r.get("primary_driver", "") or r.get("_primary_driver", "")
+        _env_only_drivers = {"environment", "environment_ops", "environment+history"}
+        _code_rec_fallback = (
+            "HOLD"    if _build_level in ("HIGH","CERTAIN") else
+            "CAUTION" if _build_level == "MEDIUM" else "GO"
+        )
+
+        # LLM build step risk — the most comprehensive build signal
+        _llm_step_risks = r.get("step_risks") or []
+        _llm_build_sr   = next((s for s in _llm_step_risks if s.get("step") == "build"), None)
+        _llm_build_lvl  = (_llm_build_sr.get("level", "Low") if _llm_build_sr else "Low")
+        _llm_build_rec  = {
+            "High": "HOLD", "Critical": "HOLD",
+            "Medium": "CAUTION", "Low": "GO",
+        }.get(_llm_build_lvl, "GO")
+        _llm_build_basis = (_llm_build_sr.get("rationale", "") or "")[:100] if _llm_build_sr else ""
+
+        # Level ordering for max()
+        _lvl_order = {"GO": 0, "CAUTION": 1, "HOLD": 2}
+
+        # ── Structural findings pre-computed here so ALL hero paths can use them ──
+        # Previously these were computed inside the hero findings block (too late).
+        # Structural analysis is deterministic — it catches compile errors the LLM
+        # misses when it applies heuristics (e.g. "subtree import = low risk").
+        _all_findings_low_pre = all(f.startswith("[LOW]") for f in _build_findings) if _build_findings else True
+        _has_high_structural = any(f.startswith("[HIGH]") or f.startswith("[CERTAIN]") for f in _build_findings)
+        # Compilation errors: missing symbols, syntax errors — certain build failures
+        _has_certain_compile_error = any(
+            any(kw in f.lower() for kw in ("cannot find symbol", "class not found", "import not found",
+                                            "compilation error", "syntax error", "missing symbol"))
+            for f in _build_findings
+        )
+
+        if _primary_driver in _env_only_drivers:
+            # Env-driven — hero stays code-only, env advisory shows env risk.
+            # BUT structural HIGH findings always override GO — the structural checker
+            # catches compile errors the LLM misses (e.g. subtree with missing imports).
+            _hero_rec   = r.get("_code_recommendation") or _code_rec_fallback
+            _hero_conf  = r.get("_code_confidence") or _build_score
+            _hero_basis = r.get("_code_confidence_basis") or _basis_label
+            if _hero_rec == "GO" and _has_high_structural:
+                _hero_rec   = "HOLD" if _has_certain_compile_error else "CAUTION"
+                _hero_conf  = max(_hero_conf, 0.70) if _has_certain_compile_error else max(_hero_conf, 0.55)
+                _hero_basis = next(
+                    (f.split("] ", 1)[-1].split(" —")[0][:120] for f in _build_findings if f.startswith(("[HIGH]", "[CERTAIN]"))),
+                    "structural analysis — HIGH findings detected"
+                )
+        else:
+            _is_submodule_only_commit = _code_sig and _code_sig.is_submodule_only
+
+            # LLM is primary — it synthesizes rule_scores + historical ChromaDB + diff.
+            if _llm_build_sr and _llm_build_rec != "GO":
+                _structural_confirms_high = _build_level in ("HIGH", "CERTAIN")
+                _high_confidence = (_conf_f or 0) >= 0.65
+
+                if _is_submodule_only_commit:
+                    # Submodule-only parent: LLM can add value (historical patterns,
+                    # cross-submodule API breaks) BUT systematically over-rates because
+                    # it sees deleted tests and @Reference as build risks — they aren't.
+                    # Rule: LLM can say CAUTION (useful signal), but never HOLD
+                    # (too many false positives for routine pointer bumps).
+                    _hero_rec = "CAUTION" if _llm_build_rec in ("HOLD", "CAUTION") else "GO"
+                elif _llm_build_rec == "HOLD" and not _structural_confirms_high and not _high_confidence:
+                    # Real code commit: HOLD needs corroboration
+                    _hero_rec = "CAUTION"
+                else:
+                    _hero_rec = _llm_build_rec
+
+                _hero_conf  = _conf_f or _build_score
+                _hero_basis = _llm_build_basis or _basis_label
+            elif _llm_build_sr and _llm_build_rec == "GO":
+                # LLM says build is safe. But structural checker may have caught a
+                # compile error the LLM missed (e.g. git subtree with missing imports —
+                # LLM applies "subtree = low risk" heuristic; structural found it anyway).
+                # Structural HIGH with a compile error always overrides LLM GO.
+                if _has_high_structural:
+                    _hero_rec   = "HOLD" if _has_certain_compile_error else "CAUTION"
+                    _hero_conf  = max((_conf_f or _build_score), 0.70) if _has_certain_compile_error else max((_conf_f or _build_score), 0.55)
+                    _hero_basis = next(
+                        (f.split("] ", 1)[-1].split(" —")[0][:120] for f in _build_findings if f.startswith(("[HIGH]", "[CERTAIN]"))),
+                        "structural diff analysis — HIGH findings override LLM GO"
+                    )
+                else:
+                    _hero_rec   = "GO"
+                    _hero_conf  = _conf_f or _build_score
+                    _hero_basis = _llm_build_basis or "LLM analysis — no build risk detected"
+            else:
+                # No LLM build step data — fall back to structural code signal
+                _hero_rec   = r.get("_code_recommendation") or _code_rec_fallback
+                _hero_conf  = r.get("_code_confidence") or _build_score
+                _hero_basis = r.get("_code_confidence_basis") or _basis_label
+
+        # ── Reasoning-derived final pass ─────────────────────────────────────────
+        # The LLM's free-form reasoning is written before the structured step_risks,
+        # so it contains the real analysis without hedging. Parse it here to:
+        #   1. Upgrade _hero_rec if reasoning says something stronger than the struct
+        #   2. Extract the key sentence to use as _hero_sub (replaces the generic text)
+        #
+        # Deterministic structural findings (compile errors) are never downgraded by this —
+        # they override reasoning. But reasoning can UPGRADE a too-low struct verdict.
+        import re as _re_rsn
+        _full_rsn = r.get("reasoning", "") or r.get("narrative", "") or ""
+        _rsn_hero_rec  = None   # verdict parsed from reasoning
+        _rsn_key_sent  = ""     # sentence to show on hero card
+
+        if _full_rsn:
+            _rsn_sents = [s.strip() for s in _re_rsn.split(r'(?<=[.!?])\s+', _full_rsn) if len(s.strip()) > 15]
+
+            # Patterns that map to HOLD/HIGH — deterministic failure language
+            _hold_kw = (
+                "will fail", "compilation error", "compile error", "cannot find symbol",
+                "class not found", "does not exist", "not found in diff", "not found in repo",
+                "definite", "certain failure", "certain build failure", "loginexception",
+                "nosuchmethoderror", "classnotfoundexception", "module not found",
+                "webpack will fail", "syntax error", "missing import", "import not found",
+                "build will fail", "this will fail", "fail at build", "fail the build",
+            )
+            # Patterns that map to CAUTION/MEDIUM
+            _caution_kw = (
+                "may fail", "might fail", "could fail", "potential", "risk", "concern",
+                "possible failure", "worth checking", "should verify", "could break",
+                "might break", "raises risk", "elevates risk",
+            )
+            # Patterns that mean GO/LOW — LLM explicitly calling it safe
+            _go_kw = (
+                "low risk", "no build risk", "safe to deploy", "unlikely to fail",
+                "no compile", "no structural", "no critical", "passes build",
             )
 
-        # ── Infrastructure disclaimer ─────────────────────────────────────────
+            _build_kw = ("build", "compile", "maven", "mvn", "java", "pom", "import",
+                         "symbol", "module", "webpack", "npm", "syntax", "class", "package")
+
+            # Score each sentence: find highest verdict among build-relevant sentences
+            _rsn_best_level = 0  # 0=nothing, 1=GO, 2=CAUTION, 3=HOLD
+            for _s in _rsn_sents[:12]:
+                _sl = _s.lower()
+                if not any(k in _sl for k in _build_kw):
+                    continue
+                if any(k in _sl for k in _hold_kw):
+                    if _rsn_best_level < 3:
+                        _rsn_best_level = 3
+                        _rsn_key_sent = _s
+                elif any(k in _sl for k in _caution_kw) and _rsn_best_level < 2:
+                    _rsn_best_level = 2
+                    _rsn_key_sent = _s
+                elif any(k in _sl for k in _go_kw) and _rsn_best_level < 1:
+                    _rsn_best_level = 1
+                    _rsn_key_sent = _s
+
+            _rsn_hero_rec = {3: "HOLD", 2: "CAUTION", 1: "GO"}.get(_rsn_best_level)
+
+            # If no build sentence found, take the first sentence as the key sentence
+            if not _rsn_key_sent and _rsn_sents:
+                _rsn_key_sent = _rsn_sents[0]
+
+        # Apply reasoning verdict: upgrade _hero_rec if reasoning says higher risk.
+        # Never downgrade a structural compile-error HOLD — deterministic beats free-form.
+        if _rsn_hero_rec:
+            _rsn_order = {"GO": 0, "CAUTION": 1, "HOLD": 2}
+            if _rsn_order.get(_rsn_hero_rec, 0) > _rsn_order.get(_hero_rec, 0):
+                # Reasoning is stronger than current verdict — upgrade
+                _hero_rec   = _rsn_hero_rec
+                _hero_conf  = max(_hero_conf or _build_score,
+                                  0.75 if _rsn_hero_rec == "HOLD" else 0.55)
+                _hero_basis = _rsn_key_sent[:150] if _rsn_key_sent else _hero_basis
+
+        # Map internal GO/CAUTION/HOLD → display labels LOW/MEDIUM/HIGH
+        _hero_display = {"GO": "LOW", "CAUTION": "MEDIUM", "HOLD": "HIGH"}.get(_hero_rec, _hero_rec)
+        _hero_col  = {"GO": T["green"], "CAUTION": T["amber"], "HOLD": T["red"]}.get(_hero_rec, T["gray"])
+        _hero_icon = {"GO": "✓", "CAUTION": "⚠", "HOLD": "✕"}.get(_hero_rec, "?")
+        # Triage framing: tell the developer what to DO, not just a verdict.
+        # Derive the recommended action from the top finding type.
+        _top_finding_check = ""
+        if _build_findings:
+            import re as _re_fc
+            _fc_match = _re_fc.search(r'\[(?:HIGH|MEDIUM|LOW|CERTAIN)\]\s+(.+?)(?:\s+—|\s+\()', _build_findings[0])
+            _top_finding_check = _fc_match.group(1).lower() if _fc_match else ""
+
+        _action_hint = (
+            "verify Java 21 compatibility — check for removed APIs and update compiler settings"
+            if any(k in _top_finding_check for k in ("java version", "java-version", "cloudmanager", "lts", "java 21", "java21"))
+            else "run `mvn -pl <module> test` locally before promoting"
+            if any(k in _top_finding_check for k in ("changed", "test", "mock", "inject", "assert", "verify", "npe", "null"))
+            else "run a local build to verify before promoting"
+            if any(k in _top_finding_check for k in ("pom", "module", "reactor", "submodule", "syntax", "exception", "plugin", "version"))
+            else "verify dispatcher config and run a local build before promoting"
+            if any(k in _top_finding_check for k in ("dispatcher", "vhost", ".any", ".farm"))
+            else "verify the affected module builds cleanly before promoting"
+        )
+
+        # Detect migration commits for special handling
+        _commit_title_lower = (st.session_state.get("risk_git_title","") or r.get("commit_sha","") or "").lower()
+        _is_migration = any(k in _commit_title_lower for k in
+                            ("migration", "migrate", "upgrade", "lts", "java21", "java 21", "refactor"))
+
+        # For migration commits: filter LOW service findings from hero (move to footnote)
+        # They're advisory noise — 5 × "tests may fail (30%)" obscures the real signals
+        _hero_findings = _build_findings
+        _migration_footnote = ""
+        if _is_migration:
+            _real_findings = [f for f in _build_findings if not f.startswith("[LOW]") or
+                              not any(k in f.lower() for k in ("changed —", "may fail at runtime"))]
+            _low_service = [f for f in _build_findings if f not in _real_findings]
+            if _low_service:
+                _hero_findings = _real_findings
+                _migration_footnote = (
+                    f'<p class="ra-ui-footnote">'
+                    f'Advisory ({len(_low_service)} service changes with no same-commit test update — '
+                    f'normal for coordinated migration PRs, existing tests should still pass).</p>'
+                )
+
+        # Unify confidence: structural score caps the LLM confidence.
+        # LLM pattern-matches broadly and returns 80-95% for any large migration.
+        # Structural analysis is more precise — use it to bound the displayed %.
+        # Rule: displayed confidence = min(LLM confidence, structural-based ceiling)
+        # Note: _has_high_structural and _all_findings_low_pre are already computed above
+        # (before hero decision block). Alias them here for the confidence section.
+        _all_findings_low = _all_findings_low_pre
+
+        # Confidence ceiling based on structural evidence:
+        # No HIGH findings → max 65% (LLM is speculating beyond structural evidence)
+        # All LOW findings → max 55%
+        # HIGH findings confirmed → allow up to LLM confidence
+        if _hero_conf and _llm_build_sr:
+            if _all_findings_low and _hero_rec == "GO":
+                # Only cap when hero agrees it's low risk — don't cap structural overrides
+                _hero_conf = min(_hero_conf, 0.55)
+            elif not _has_high_structural and _is_migration:
+                # Migration commit with only MEDIUM structural findings — LLM over-patterns
+                _hero_conf = min(_hero_conf, 0.65)
+
+        # ── Single source of truth: _approx_pct always reflects _hero_conf ──────
+        # Previously: _approx_pct = int(_build_score * 100) — the raw structural scorer.
+        # Problem: when _hero_rec is overridden (e.g. GO→HOLD by compile errors),
+        # _hero_conf updates but _approx_pct stays at the original low score.
+        # Result: hero badge = HIGH, hero subtext = "Minor signal" (15%) → contradiction.
+        # Fix: _approx_pct derives from _hero_conf, which IS updated on override.
+        _approx_pct = int((_hero_conf or _build_score) * 100)
+
+        # ── Hero subtext: use reasoning sentence when available ──────────────────
+        # _rsn_key_sent is the actual sentence from the LLM's free-form analysis.
+        # It's more informative than a generic "Minor signal" label.
+        # Fallback to generic text only when reasoning produced nothing useful.
+        if _rsn_key_sent and _hero_rec != "GO":
+            # Trim to a readable length and strip trailing incomplete words
+            _rsn_display = _rsn_key_sent[:200].rsplit(" ", 1)[0] if len(_rsn_key_sent) > 200 else _rsn_key_sent
+            _hero_sub = _rsn_display
+        elif _hero_rec == "GO":
+            _hero_sub = (
+                "No code issues found"
+                if _primary_driver not in ("history", "code+history")
+                else f"Code looks clean — but similar past commits failed. {_action_hint}."
+            )
+        elif _hero_rec == "HOLD" and _has_certain_compile_error:
+            _hero_sub = f"Compilation error — this commit will fail the build"
+        elif _hero_rec == "HOLD":
+            _hero_sub = f"Code changes likely to cause issues — {_action_hint}"
+        elif _approx_pct <= 35:
+            _hero_sub = f"Minor signal — {_action_hint}"
+        elif _approx_pct <= 60:
+            _hero_sub = f"Code changes may cause issues — {_action_hint}"
+        else:
+            _hero_sub = f"Code changes likely to cause issues — {_action_hint}"
+
+        # ── Summary cards — Build Test + Environment Readiness ────────────────
+        if _hero_findings:
+            _build_findings_html = (
+                '<p class="ra-ui-section-label">Findings in this diff</p>'
+                + "".join(
+                    f'<p class="ra-ui-finding">› {f}</p>'
+                    for f in _hero_findings[:5]
+                )
+                + _migration_footnote
+            )
+        elif _build_findings and _migration_footnote:
+            # All findings were LOW service changes — show just the footnote
+            _build_findings_html = _migration_footnote
+        else:
+            _changed_types = []
+            if _code_sig:
+                _diff_text_check = st.session_state.get("risk_git_diff", "") or ""
+                if "java" in _build_detail.lower() or ".java" in _diff_text_check.lower():
+                    _changed_types.append("Java")
+                if "pom" in _build_detail.lower():
+                    _changed_types.append("pom.xml")
+                if _code_sig.is_submodule_only:
+                    _changed_types.append("submodule pointers")
+            _checked_str = ", ".join(_changed_types) or "diff"
+            _build_findings_html = (
+                f'<p>✓ No critical patterns found — checked {_checked_str} for OSGi issues, '
+                f'missing @Reference/@Service, reactor changes, and dependency conflicts.</p>'
+            )
+
+        # _build_fail_pct must be consistent with _hero_rec.
+        # Since _approx_pct now derives from _hero_conf, use the same source here
+        # so the displayed percentage always matches the badge level.
+        _build_fail_pct = _approx_pct
+        _build_icon_kind = {"GO": "check", "CAUTION": "warn", "HOLD": "x"}.get(_hero_rec, "build")
+
+        # When HIGH/HOLD and basis contains the specific reason (e.g. compilation error),
+        # show it prominently as the main body — not buried in tiny footnote font.
+        _basis_is_specific = (
+            _hero_rec in ("HOLD", "CAUTION")
+            and any(k in (_hero_basis or "").lower() for k in (
+                "exception", "loginexception", "compilation", "uncaught",
+                "missing", "error", "conflict", "fails"
+            ))
+        )
+        _basis_display = (
+            f'<p class="ra-ui-action" style="color:{_hero_col}">{_hero_basis}</p>'
+            if _basis_is_specific
+            else f'<p class="ra-ui-footnote">Based on: {_hero_basis}</p>'
+        )
+
+        _build_card_body = (
+            f'<p class="ra-ui-sub">Code-level risk from this commit\'s changes</p>'
+            f'<p class="ra-ui-sub">Confidence: {int(_hero_conf * 100)}%</p>'
+            f'{_build_findings_html}'
+            f'{_basis_display}'
+        )
+
+        _env_card_verdict = "—"
+        _env_card_col     = T["gray"]
+        _env_card_icon_kind = "server"
+        _env_fail_pct     = 0
+        _env_card_sub     = "Based on recent pipeline history"
+        _env_card_body    = (
+            '<p>No environment data available. '
+            'Run assessment with pipeline history to check env readiness.</p>'
+        )
+        if _env_sig:
+            _env_status = _env_sig.status
+            _env_col = {"READY": T["green"], "CAUTION": T["amber"], "NOT_READY": T["red"]}.get(
+                _env_status, T["gray"]
+            )
+            _env_icon = {"READY": "✓", "CAUTION": "⚠", "NOT_READY": "✕"}.get(_env_status, "?")
+            _consec = _env_sig.consecutive_failures
+            _dom = _env_sig.dominant_step or "unknown"
+            _last_ok = _env_sig.last_success_ago or "unknown"
+            _window_fail_count = (
+                r.get("_env_signal", {}).get("env_step_failure_count", 0)
+                or getattr(_env_sig, "env_step_failure_count", 0)
+                or 0
+            )
+
+            if _env_status == "READY":
+                _env_headline = "Environment is healthy"
+                _last_ok_str = f"Last success: {_last_ok}." if _last_ok and _last_ok != "unknown" else "No recent pipeline data available."
+                _env_body = f"No recent failures detected. {_last_ok_str}"
+                _env_action = ""
+            elif _env_status == "CAUTION" and _consec == 0 and _window_fail_count > 0:
+                _env_headline = (
+                    f"{_window_fail_count} failures at {_dom} in recent window — last run passed"
+                )
+                _env_body = (
+                    f"Last success: {_last_ok}. The pipeline has had {_window_fail_count} "
+                    f"{_dom} failures recently. The last run passed, but the pattern may recur. "
+                    f"This is not caused by this commit — it is an Adobe-managed environment issue."
+                )
+                _env_action = f"This step may fail. It is an infrastructure issue unrelated to your code."
+            elif _env_status == "CAUTION" and _consec == 0:
+                _env_headline = "Environment recently stable"
+                _env_body = f"Last success: {_last_ok}. No recent failures in current window."
+                _env_action = ""
+            elif _env_status == "CAUTION":
+                _env_headline = f"{_consec} recent failure{'s' if _consec != 1 else ''} at {_dom}"
+                _env_body = (
+                    f"Last success: {_last_ok}. Recent {_dom} failures are infrastructure-level — "
+                    f"not caused by this commit. This is an Adobe-managed environment issue."
+                )
+                _env_action = f"This step may fail again. It is not related to your code changes."
+            else:
+                # Guard: NOT_READY with 0 consecutive failures or unknown step is
+                # inconsistent data (serialization error or stale cache). Show as healthy.
+                if _consec == 0 or _dom == "unknown":
+                    _env_headline = "Environment is healthy"
+                    _env_body = f"No recent failures detected. Last success: {_last_ok}."
+                    _env_action = ""
+                    _env_status = "READY"
+                    _env_col  = T["green"]
+                    _env_bg   = "#EDFAF3"
+                    _env_icon = "✓"
+                else:
+                    _env_headline = f"{_consec} consecutive failures at {_dom}"
+                    _env_body = (
+                        f"Last success: {_last_ok}. Every recent pipeline has failed at {_dom}. "
+                        f"This is an Adobe-managed infrastructure issue — "
+                        f"not caused by any code change in this commit. "
+                        f"Your code risk is assessed separately in Build Test above."
+                    )
+                    _env_action = f"This step will likely fail again. Raise with Adobe Support if this has been ongoing for more than a few days."
+
+            if _env_status == "CAUTION" and _consec == 0 and _window_fail_count > 0:
+                _data_note_count = (
+                    f"{_window_fail_count} {_dom} failures in recent window · last run passed"
+                )
+            elif _consec > 0:
+                _data_note_count = f"{_consec} consecutive failure{'s' if _consec != 1 else ''}"
+            else:
+                _data_note_count = "recent pipeline history"
+
+            _env_risk_lvl = (
+                "HIGH"
+                if (_env_status == "NOT_READY" or _consec >= 3 or _window_fail_count >= 3)
+                else "MEDIUM"
+                if (_env_status == "CAUTION" and (_consec > 0 or _window_fail_count > 0))
+                else "LOW"
+            )
+            _env_risk_label = {
+                "HIGH":   "HIGH",
+                "MEDIUM": "MEDIUM",
+                "LOW":    "LOW",
+            }.get(_env_risk_lvl, "")
+            # Compute failure probability from window data when consecutive=0.
+            # failure_probability=0.05 (the default for consecutive=0) is wrong when
+            # the window shows many failures — 10/10 runs failed = 60% probability not 5%.
+            if _consec == 0 and _window_fail_count > 0:
+                _window_rate = _window_fail_count / 10.0
+                _env_fail_pct = int(max(0.15, min(_window_rate * 0.6, 0.80)) * 100)
+            else:
+                _env_fail_pct = int((_env_sig.failure_probability or 0) * 100)
+            if _env_risk_lvl == "HIGH":
+                _env_card_icon_kind = "x"
+            elif _env_risk_lvl == "MEDIUM":
+                _env_card_icon_kind = "warn"
+            else:
+                _env_card_icon_kind = "check"
+
+            _env_card_verdict = _env_headline   # headline = descriptive text, not HIGH/MEDIUM/LOW
+            _env_card_col = _env_col
+            _env_card_body = (
+                f'<p class="ra-ui-sub">{_env_card_sub}</p>'
+                f'<p>{_env_body}</p>'
+                + (
+                    f'<p class="ra-ui-action" style="color:{_env_col}">→ {_env_action}</p>'
+                    if _env_action and _env_risk_lvl != "LOW"
+                    else ""
+                )
+                + f'<p class="ra-ui-footnote">{_data_note_count} · Splunk pipeline window</p>'
+            )
+
+        # ── Historical matches (carousel rendered at end of page) ────────────
+        _hist_hits = []
+        try:
+            from vector_store.store import find_similar_failures
+            import re as _re_hist
+            _mods = r.get("modules_at_risk", [])
+            _q_signal = " ".join(_mods) + " " + r.get("change_intent", "")
+            _target_pipeline = pipeline_df["pipelineName"].mode()[0] if not pipeline_df.empty else ""
+            _env_sig_raw = r.get("_env_signal") or {}
+            _changed_files_hist = st.session_state.get("risk_git_changed_files", []) or []
+            _has_disp_hist = any(
+                k in " ".join(_changed_files_hist).lower()
+                for k in ("dispatcher", ".any", ".vhost", ".farm", "ui.config", "security",
+                          "auth", "acl", "oauth", "crxde")
+            )
+            _skip_sec_hist = not _has_disp_hist
+            _query_step = r.get("most_likely_failure_step", "build")
+            if _skip_sec_hist and _query_step == "securityTest":
+                _query_step = "build"
+            _hist_tenant = _active_customer.get("tenant_id", "") or _active_customer.get("program_id", "")
+            _hist_hits = find_similar_failures(
+                error_type=_query_step,
+                error_message=_q_signal,
+                key_lines=_mods,
+                step="" if _skip_sec_hist else _query_step,
+                top_k=6,
+                pipeline=_target_pipeline,
+                tenant_id=_hist_tenant,
+            )
+            if _skip_sec_hist:
+                _hist_hits = [h for h in _hist_hits if h.get("step", "") != "securityTest"]
+        except Exception:
+            pass
+
+        if _hist_hits:
+            from difflib import SequenceMatcher
+            import re as _re_dedup
+
+            def _text_sim(a: str, b: str) -> float:
+                return SequenceMatcher(None, a.lower()[:300], b.lower()[:300]).ratio()
+
+            def _fingerprint(h: dict) -> str:
+                text = (h.get("root_cause") or "") + " " + (h.get("step") or "")
+                words = _re_dedup.findall(r'\b[a-z]{5,}\b', text.lower())
+                top = sorted(set(words), key=words.count, reverse=True)[:6]
+                return " ".join(sorted(top))
+
+            _deduped = []
+            for _h in sorted(_hist_hits, key=lambda x: x.get("similarity_score", 0), reverse=True):
+                _rc = (_h.get("root_cause") or "").strip()
+                _stp = (_h.get("step") or "").strip()
+                _fp = _fingerprint(_h)
+                _dup = any(
+                    (_stp == (d.get("step") or "").strip()) and (
+                        _text_sim(_rc, d.get("root_cause") or "") > 0.55 or
+                        _text_sim(_fp, _fingerprint(d)) > 0.75
+                    )
+                    for d in _deduped
+                )
+                if not _dup:
+                    _deduped.append(_h)
+            _hist_hits = _deduped[:5]
+
+            if _hist_hits and (_hist_sig is None or _hist_sig.score == 0.0):
+                try:
+                    from analysis.risk_scorer import HistoricalSignal as _HS
+                    _scores = [h.get("similarity_score", 0) for h in _hist_hits]
+                    _avg_s = sum(_scores) / len(_scores) if _scores else 0
+                    _dom = max(
+                        {h.get("step", ""): 0 for h in _hist_hits},
+                        key=lambda s: sum(1 for h in _hist_hits if h.get("step") == s),
+                        default="",
+                    )
+                    _hist_sig = _HS(
+                        score=_avg_s, match_count=len(_hist_hits),
+                        dominant_step=_dom,
+                        fail_rate=_avg_s * 0.9,
+                        detail=f"{len(_hist_hits)} past incidents matched — avg {int(_avg_s*100)}% similarity",
+                        examples=_hist_hits[:3],
+                    )
+                except Exception:
+                    pass
+
+        # _env_fill_pct and _env_risk_lvl are set inside `if _env_sig:` — ensure defaults
+        try:
+            _env_fill_pct
+        except NameError:
+            _env_fill_pct = 0
+        try:
+            _env_risk_lvl
+        except NameError:
+            _env_risk_lvl = "LOW"
+
+        # ── Pipeline Risk banner — overall verdict before step-specific cards ──
+        # This is the most prominent statement. It answers: "will this pipeline fail?"
+        # Step-specific cards below answer: "where and why?"
+        # Keeping the top verdict pipeline-level means it stays correct even when
+        # Argus predicts the wrong step — direction accuracy is ~70%, step ~35%.
+        _overall_risk_pct = max(_build_fail_pct, _env_fill_pct)
+        _overall_risk_lvl  = (
+            "HIGH"   if _hero_rec in ("HOLD",) or _env_risk_lvl == "HIGH"
+            else "MEDIUM" if _hero_rec == "CAUTION" or _env_risk_lvl == "MEDIUM"
+            else "LOW"
+        )
+        _overall_col  = {"HIGH": T["red"], "MEDIUM": T["amber"], "LOW": T["green"]}.get(_overall_risk_lvl, T["gray"])
+        _overall_icon = {"HIGH": "✕", "MEDIUM": "⚠", "LOW": "✓"}.get(_overall_risk_lvl, "?")
+        _overall_text = {
+            "HIGH":   "This commit has a HIGH chance of causing a pipeline failure",
+            "MEDIUM": "This commit may cause a pipeline failure — verify before promoting",
+            "LOW":    "This commit looks safe to promote",
+        }.get(_overall_risk_lvl, "")
+
+        # ── NEW: Top Verdict Banner ────────────────────────────────────────────
+        # Determine banner state: env-only issue takes precedence for special framing
+        _is_env_only_issue = (
+            _primary_driver in _env_only_drivers
+            and _hero_rec == "GO"
+            and _env_sig is not None
+            and getattr(_env_sig, "status", "READY") not in ("READY",)
+        )
+        if _is_env_only_issue:
+            _verdict_icon  = "🔁"
+            _verdict_title = "PIPELINE UNSTABLE — NOT YOUR CODE"
+            _verdict_color = "#4A6FA5"
+            _verdict_bg    = "#EEF3FE"
+            _verdict_border = "#C0D2FA"
+        elif _hero_rec == "HOLD":
+            _verdict_icon  = "🔴"
+            _verdict_title = "DO NOT PROMOTE"
+            _verdict_color = T["red"]
+            _verdict_bg    = "#FEF0F0"
+            _verdict_border = "#FBCECE"
+        elif _hero_rec == "CAUTION":
+            _verdict_icon  = "⚠️"
+            _verdict_title = "REVIEW BEFORE PROMOTING"
+            _verdict_color = T["amber"]
+            _verdict_bg    = "#FEFAE8"
+            _verdict_border = "#F5E0A0"
+        else:
+            _verdict_icon  = "✅"
+            _verdict_title = "SAFE TO PROMOTE"
+            _verdict_color = T["green"]
+            _verdict_bg    = "#EDFAF3"
+            _verdict_border = "#BDECD3"
+
         st.markdown(
-            f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
-            f'border-radius:6px;padding:8px 14px;margin-bottom:10px">'
-            f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0">'
-            f'⚠ This assessment analyses <strong>code-caused risks only</strong>. '
-            f'Infrastructure failures (JDK/toolchain misconfiguration, cloud scaling issues, '
-            f'environment resource limits) cannot be predicted from a git diff and are not reflected here.'
-            f'</p></div>',
+            f'<div style="border:2px solid {_verdict_border};border-radius:10px;'
+            f'padding:16px 20px;margin-bottom:16px;background:{_verdict_bg}">'
+            f'<p style="font-size:15px;font-weight:700;color:{_verdict_color};margin:0 0 6px 0">'
+            f'{_verdict_icon}&nbsp;&nbsp;{_verdict_title}</p>'
+            f'<p style="font-size:13px;color:#333;margin:0;line-height:1.5">{_hero_sub}</p>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
-        # ── Section 1: Release Risk Overview strip ────────────────────────────
-        risk_level = r.get("risk_level", "Unknown")
-        _rl_bg  = {"Critical": "#FEF0F0", "High": "#FEF0F0", "Medium": "#FEFAE8", "Low": "#EDFAF3"}.get(risk_level, "#F4F4F8")
-        _rl_col = {"Critical": T["red"],  "High":  T["red"],  "Medium": T["amber"],  "Low": T["green"]}.get(risk_level, T["gray"])
-        _confidence = r.get("confidence_score", 0)
-        _intent = r.get("change_intent", "") or "unknown"
-        _br_scope = (r.get("blast_radius_analysis") or {}).get("deployment_scope", "—")
-        _fail_step = r.get("most_likely_failure_step", "—")
+        # ── Existing hero cards (now secondary detail) ────────────────────────
+        _env_card_title = (
+            "Pipeline History (not caused by this commit)"
+            if _primary_driver in _env_only_drivers
+            else "Pipeline History"
+        )
+        # Rewrite env card body wording: replace "environment broken" language
+        # and add disclaimer about data source
+        if _env_sig:
+            _env_disclaimer = (
+                '<p class="ra-ui-footnote" style="margin-top:8px;font-style:italic">'
+                'Argus reads Splunk pipeline run history — not server metrics or infrastructure state.</p>'
+            )
+            _consec_display = getattr(_env_sig, "consecutive_failures", 0)
+            _last_ok_display = getattr(_env_sig, "last_success_ago", "unknown")
+            _dom_display = getattr(_env_sig, "dominant_step", "unknown")
+            _pipeline_history_extra = (
+                f'<p class="ra-ui-sub" style="margin-top:6px">'
+                f'Consecutive failures: <strong>{_consec_display}</strong> · '
+                f'Last success: <strong>{_last_ok_display}</strong> · '
+                f'Dominant step: <strong>{_dom_display}</strong>'
+                f'</p>'
+            )
+            # Replace "Environment broken" language in body
+            _env_card_body_display = _env_card_body.replace(
+                "Environment broken", "Pipeline showing repeated failures"
+            ).replace(
+                "environment broken", "pipeline showing repeated failures"
+            )
+            _env_card_body_display = _env_card_body_display + _pipeline_history_extra + _env_disclaimer
+        else:
+            _env_card_body_display = _env_card_body
 
-        # Chip color helpers for scope
-        _scope_col = {"isolated": T["green"], "service-wide": T["amber"], "platform-wide": T["red"]}.get(_br_scope, T["gray"])
-        _scope_bg  = {"isolated": "#EDFAF3",  "service-wide": "#FEFAE8",  "platform-wide": "#FEF0F0"}.get(_br_scope, "#F4F4F8")
+        st.markdown(
+            '<div class="ra-hero-stack">'
+            + risk_summary_card_html(
+                title=f"Code Risk — {_build_fail_pct}% · {int(_hero_conf * 100)}% confidence",
+                percent_label=f"{_build_fail_pct}%",
+                percent_color=_hero_col,
+                icon_bg=_hero_col,
+                headline=_hero_sub,
+                body_html=_build_card_body,
+                icon_kind=_build_icon_kind,
+                compact=False,
+            )
+            + risk_summary_card_html(
+                title=_env_card_title,
+                percent_label=f"{_env_fail_pct}%",
+                percent_color=_env_card_col,
+                icon_bg=_env_card_col,
+                headline=_env_card_verdict,
+                body_html=_env_card_body_display,
+                icon_kind=_env_card_icon_kind,
+                compact=True,
+            )
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
-        _strip_cols = st.columns(5, gap="small")
+        # ── NEW: What Will Fail (HOLD only) ───────────────────────────────────
+        if _hero_rec == "HOLD":
+            _high_findings = [
+                f for f in _build_findings
+                if f.startswith("[HIGH]") or f.startswith("[CERTAIN]")
+            ]
+            _fail_step_display = r.get("most_likely_failure_step", "build")
+            _first_cause = ""
+            if _high_findings:
+                import re as _re_wf
+                _wf_m = _re_wf.sub(r'^\[(?:HIGH|CERTAIN)\]\s*', '', _high_findings[0])
+                _first_cause = _wf_m.strip()
+            _rec_actions_wf = r.get("recommended_actions", [])
+            _fix_text = _rec_actions_wf[0] if _rec_actions_wf else ""
 
-        with _strip_cols[0]:
+            _findings_bullets = "".join(
+                f'<li style="font-size:0.83rem;color:#333;line-height:1.55;margin-bottom:4px">{f}</li>'
+                for f in _high_findings
+            )
+            _fix_html = (
+                f'<p style="font-size:0.83rem;color:#333;margin:8px 0 0 0">'
+                f'<strong>Fix:</strong> {_fix_text}</p>'
+                if _fix_text else ""
+            )
             st.markdown(
-                f'<div style="background:{_rl_bg};border:1px solid {_rl_col}44;border-radius:10px;'
-                f'padding:0.85rem 1rem;text-align:center">'
-                f'<p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.09em;color:{_rl_col};margin:0 0 0.3rem 0">Risk Level</p>'
-                f'<p style="font-size:1.45rem;font-weight:800;color:{_rl_col};'
-                f'letter-spacing:-0.02em;margin:0;line-height:1.1">{risk_level}</p>'
-                f'</div>',
+                f'<div style="border:1px solid #FBCECE;border-radius:8px;'
+                f'padding:14px 18px;margin-bottom:12px;background:#FEF0F0">'
+                f'<p style="font-size:13px;font-weight:700;color:{T["red"]};margin:0 0 8px 0">'
+                f'🔴 WHAT WILL FAIL</p>'
+                f'<p style="font-size:0.83rem;color:#333;margin:0 0 4px 0">'
+                f'<strong>Step:</strong> {_fail_step_display}</p>'
+                + (f'<p style="font-size:0.83rem;color:#333;margin:0 0 8px 0">'
+                   f'<strong>Cause:</strong> {_first_cause}</p>' if _first_cause else "")
+                + (f'<p style="font-size:0.78rem;font-weight:700;color:{T["red"]};'
+                   f'margin:8px 0 4px 0">Findings:</p>'
+                   f'<ul style="margin:0;padding-left:1.25rem">{_findings_bullets}</ul>'
+                   if _findings_bullets else "")
+                + _fix_html
+                + f'</div>',
                 unsafe_allow_html=True,
             )
 
-        with _strip_cols[1]:
-            _conf_col = T["green"] if _confidence >= 70 else T["amber"] if _confidence >= 40 else T["red"]
-            st.markdown(
-                f'<div style="background:{T["surface"]};border:1px solid {T["border"]};border-radius:10px;'
-                f'padding:0.85rem 1rem;text-align:center">'
-                f'<p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 0.3rem 0">Confidence</p>'
-                f'<p style="font-size:1.45rem;font-weight:800;color:{_conf_col};'
-                f'letter-spacing:-0.02em;margin:0;line-height:1.1">{_confidence}%</p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        # ── NEW: What to Watch (CAUTION or HOLD) ─────────────────────────────
+        if _hero_rec in ("CAUTION", "HOLD"):
+            _step_risks_all = r.get("step_risks", [])
+            _fail_step_skip = r.get("most_likely_failure_step", "") if _hero_rec == "HOLD" else ""
+            _watch_steps = [
+                s for s in _step_risks_all
+                if s.get("level", "Low").upper() in ("MEDIUM", "LOW", "HIGH")
+                and s.get("step", "") != _fail_step_skip
+                and s.get("step", "") != "build"  # build is shown in What Will Fail
+            ]
+            # Sort: Medium first, then Low
+            _watch_steps.sort(key=lambda s: {"High": 0, "Medium": 1, "Low": 2}.get(s.get("level", "Low"), 2))
+            if _watch_steps:
+                _watch_rows = "".join(
+                    f'<div style="padding:6px 0;border-bottom:1px solid #F5E0A0">'
+                    f'<span style="font-size:0.83rem;font-weight:600;color:#333">'
+                    f'{s.get("step","?")} — {s.get("level","?")}</span>'
+                    + (f'<br><span style="font-size:0.78rem;color:#555;line-height:1.4">'
+                       f'{s.get("rationale","")}</span>' if s.get("rationale") else "")
+                    + f'</div>'
+                    for s in _watch_steps
+                )
+                st.markdown(
+                    f'<div style="border:1px solid #F5E0A0;border-radius:8px;'
+                    f'padding:14px 18px;margin-bottom:12px;background:#FEFAE8">'
+                    f'<p style="font-size:13px;font-weight:700;color:{T["amber"]};margin:0 0 8px 0">'
+                    f'⚠️ WHAT TO WATCH</p>'
+                    + _watch_rows
+                    + f'</div>',
+                    unsafe_allow_html=True,
+                )
 
-        with _strip_cols[2]:
-            st.markdown(
-                f'<div style="background:{T["surface"]};border:1px solid {T["border"]};border-radius:10px;'
-                f'padding:0.85rem 1rem;text-align:center">'
-                f'<p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 0.45rem 0">Change Intent</p>'
-                f'<span style="background:{T["blue"]}18;color:{T["blue"]};border:1px solid {T["blue"]}44;'
-                f'padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:600">'
-                f'{_intent}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        # Keep for downstream sections (blast radius, affected modules etc.)
+        _fail_step  = r.get("most_likely_failure_step", "—")
+        _br_scope   = (r.get("blast_radius_analysis") or {}).get("deployment_scope", "—")
+        _scope_col  = {"isolated": T["green"], "service-wide": T["amber"], "platform-wide": T["red"]}.get(_br_scope, T["gray"])
+        _scope_bg   = {"isolated": "#EDFAF3",  "service-wide": "#FEFAE8",  "platform-wide": "#FEF0F0"}.get(_br_scope, "#F4F4F8")
 
-        with _strip_cols[3]:
-            st.markdown(
-                f'<div style="background:{_scope_bg};border:1px solid {_scope_col}44;border-radius:10px;'
-                f'padding:0.85rem 1rem;text-align:center">'
-                f'<p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 0.45rem 0">Blast Radius</p>'
-                f'<span style="background:{_scope_bg};color:{_scope_col};border:1px solid {_scope_col}66;'
-                f'padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:600">'
-                f'{_br_scope}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-        with _strip_cols[4]:
-            st.markdown(
-                f'<div style="background:{T["surface"]};border:1px solid {T["border"]};border-radius:10px;'
-                f'padding:0.85rem 1rem;text-align:center">'
-                f'<p style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
-                f'letter-spacing:0.09em;color:{T["text_muted"]};margin:0 0 0.35rem 0">Most Likely Failure</p>'
-                f'<p style="font-size:0.83rem;font-weight:700;color:{T["red"]};'
-                f'margin:0;line-height:1.3;word-break:break-word">{_fail_step}</p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
+        # ─────────────────────────────────────────────────────────────────────
+        # DEEP DIVE — AI reasoning, modules, step risks, hypotheses
+        # Lower confidence than build hero above — LLM-generated content.
+        # ─────────────────────────────────────────────────────────────────────
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;margin:16px 0 8px 0">'
+            f'<div style="flex:1;height:1px;background:{T["border"]}"></div>'
+            f'<span style="font-size:0.62rem;font-weight:700;text-transform:uppercase;'
+            f'letter-spacing:0.12em;color:{T["text_muted"]};white-space:nowrap">'
+            f'TECHNICAL DETAILS &amp; AI REASONING · Lower confidence</span>'
+            f'<div style="flex:1;height:1px;background:{T["border"]}"></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         # ── Row 1: AI Summary + Affected Modules ─────────────────────────────
         _col_sum, _col_mod = st.columns([11, 9], gap="medium")
@@ -2620,243 +4644,6 @@ elif page == "Risk Assessment":
                         unsafe_allow_html=True,
                     )
 
-        # ── Historical Matches ────────────────────────────────────────────────
-        with content_card():
-            section_label("Historical Matches")
-            _hist_hits = []
-            try:
-                from vector_store.store import find_similar_failures
-                import re as _re_hist
-                _mods = r.get("modules_at_risk", [])
-                _q_signal = " ".join(_mods) + " " + r.get("change_intent", "")
-                # Pass the target pipeline name so Dev-pipeline records are excluded
-                _target_pipeline = pipeline_df["pipelineName"].mode()[0] if not pipeline_df.empty else ""
-                _hist_hits = find_similar_failures(
-                    error_type=r.get("most_likely_failure_step", "build"),
-                    error_message=_q_signal,
-                    key_lines=_mods,
-                    step=r.get("most_likely_failure_step", ""),
-                    top_k=6,
-                    pipeline=_target_pipeline,
-                )
-            except Exception:
-                pass
-
-            # ── Deduplicate near-identical hits ───────────────────────────────
-            if _hist_hits:
-                from difflib import SequenceMatcher
-                def _text_sim(a: str, b: str) -> float:
-                    return SequenceMatcher(None, a.lower()[:200], b.lower()[:200]).ratio()
-                _deduped = []
-                for _h in _hist_hits:
-                    _rc  = (_h.get("root_cause") or "").strip()
-                    _fix = (_h.get("fix") or "").strip()
-                    _stp = (_h.get("step") or "").strip()
-                    _dup = any(
-                        (_stp == (d.get("step") or "").strip()) and
-                        _text_sim(_rc,  (d.get("root_cause") or "")) > 0.65 and
-                        _text_sim(_fix, (d.get("fix") or ""))        > 0.65
-                        for d in _deduped
-                    )
-                    if not _dup:
-                        _deduped.append(_h)
-                _hist_hits = _deduped
-
-            if _hist_hits:
-                # ── Detect recurring patterns ─────────────────────────
-                _step_counts: dict = {}
-                for _h in _hist_hits:
-                    _s = (_h.get("step") or "").strip()
-                    if _s:
-                        _step_counts[_s] = _step_counts.get(_s, 0) + 1
-                _recurring_steps = {s for s, n in _step_counts.items() if n >= 2}
-
-                # ── Aggregate banner ──────────────────────────────────
-                _avg_score = int(sum(_h.get("similarity_score", 0) for _h in _hist_hits) / len(_hist_hits) * 100)
-                _high_matches = sum(1 for _h in _hist_hits if _h.get("similarity_score", 0) >= 0.85)
-
-                # Recurring steps (same step appears ≥2× in results) always escalate
-                # to at least SEEN BEFORE — "LOW OVERLAP" must not appear alongside them.
-                _has_recurring = bool(_recurring_steps)
-                _banner_color = T["red"] if _high_matches >= 2 else T["amber"] if (_high_matches >= 1 or _has_recurring) else T["green"]
-                _banner_bg    = "rgba(255,99,99,0.07)" if _high_matches >= 2 else "rgba(245,166,35,0.07)" if (_high_matches >= 1 or _has_recurring) else "rgba(62,207,142,0.07)"
-                _banner_label = "HIGH RISK — pattern seen before" if _high_matches >= 2 else "SEEN BEFORE — recurring step pattern matched" if _has_recurring else "SEEN BEFORE — similar failures exist" if _high_matches >= 1 else "LOW OVERLAP — mostly new territory"
-
-                st.markdown(
-                    f'<div style="background:{_banner_bg};border:1px solid {_banner_color}44;'
-                    f'border-radius:8px;padding:10px 14px;margin-bottom:12px;'
-                    f'display:flex;align-items:center;justify-content:space-between;gap:8px">'
-                    f'<div style="display:flex;align-items:center;gap:8px">'
-                    f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{_banner_color};flex-shrink:0"></span>'
-                    f'<div>'
-                    f'<p style="font-size:0.7rem;font-weight:800;text-transform:uppercase;'
-                    f'letter-spacing:0.08em;color:{_banner_color};margin:0">{_banner_label}</p>'
-                    f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0">'
-                    f'{len(_hist_hits)} observed failure records matched &nbsp;·&nbsp; avg similarity {_avg_score}%</p>'
-                    f'</div></div>'
-                    + (
-                        f'<div style="text-align:right">'
-                        f'<p style="font-size:0.68rem;font-weight:700;text-transform:uppercase;'
-                        f'letter-spacing:0.07em;color:{T["red"]};margin:0">Recurring</p>'
-                        f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0">'
-                        + ", ".join(_recurring_steps) + f'</p></div>'
-                        if _recurring_steps else ""
-                    )
-                    + f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-                # ── Recurring pattern alert ───────────────────────────
-                if _recurring_steps:
-                    for _rs in _recurring_steps:
-                        _rs_hits = [_h for _h in _hist_hits if (_h.get("step") or "").strip() == _rs]
-                        _rs_causes = list({(_h.get("root_cause") or "")[:80] for _h in _rs_hits if _h.get("root_cause")})
-                        st.markdown(
-                            f'<div style="background:rgba(255,99,99,0.06);border:1px solid {T["red"]}33;'
-                            f'border-left:3px solid {T["red"]};border-radius:6px;'
-                            f'padding:8px 12px;margin-bottom:8px">'
-                            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
-                            f'<span style="font-size:0.68rem;font-weight:800;text-transform:uppercase;'
-                            f'letter-spacing:0.08em;color:{T["red"]}">Recurring · {_rs}</span>'
-                            f'<span style="font-size:0.68rem;color:{T["text_muted"]}">'
-                            f'failed {len(_rs_hits)}× in observed memory</span>'
-                            f'</div>'
-                            + (
-                                f'<p style="font-size:0.75rem;color:{T["text_sub"]};margin:0">'
-                                + " &nbsp;/&nbsp; ".join(_rs_causes[:2]) + f'</p>'
-                                if _rs_causes else ""
-                            )
-                            + f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                # ── Match cards ───────────────────────────────────────
-                for _hi, _h in enumerate(_hist_hits):
-                    _eid        = str(_h.get("execution_id", "—"))
-                    _step       = (_h.get("step") or "").strip()
-                    _root_cause = (_h.get("root_cause") or "").strip()
-                    _fix        = (_h.get("fix") or "").strip()
-                    _err_msg    = (_h.get("error_message") or "").strip()
-                    _score      = int(_h.get("similarity_score", 0) * 100)
-                    _sim_col    = T["red"] if _score >= 85 else T["amber"] if _score >= 70 else T["green"]
-                    _is_recur   = _step in _recurring_steps
-
-                    # Source type detection
-                    _sha_match = _re_hist.search(r"risk-([a-f0-9]{6,12})-(\w+)", _eid)
-                    _rpt_match = _re_hist.match(r"report:(.+):\d+", _eid)
-                    if _eid.isdigit():
-                        _src_label = "#" + _eid[:10]
-                        _src_col   = T["blue"]
-                        _src_icon  = "#"
-                    elif _sha_match:
-                        _src_label = "commit " + _sha_match.group(1)
-                        _src_col   = T.get("purple", "#A855F7")
-                        _src_icon  = "~"
-                        _step      = _step or _sha_match.group(2)
-                    elif _rpt_match:
-                        _src_label = "report"
-                        _src_col   = T["amber"]
-                        _src_icon  = "F"
-                    else:
-                        _src_label = _eid[:14]
-                        _src_col   = T["text_muted"]
-                        _src_icon  = "·"
-
-                    # Changed files
-                    _changed_files = [
-                        f.strip() for f in _err_msg.split("|") if f.strip()
-                    ] if "|" in _err_msg else (
-                        [_err_msg] if _err_msg and len(_err_msg) < 120 else []
-                    )
-
-                    # Build card parts separately to avoid f-string nesting issues
-                    _card_border = T["red"] + "55" if _is_recur else T["border"]
-                    _card_left   = f'border-left:3px solid {T["red"]};' if _is_recur else ""
-
-                    _step_badge = (
-                        f'<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;'
-                        f'letter-spacing:0.06em;color:{T["text_muted"]};background:{T["surface2"]};'
-                        f'border:1px solid {T["border"]};padding:2px 7px;border-radius:4px">{_step}</span>'
-                    ) if _step else ""
-
-                    _recur_badge = (
-                        f'<span style="font-size:0.62rem;font-weight:800;text-transform:uppercase;'
-                        f'letter-spacing:0.06em;color:{T["red"]};background:rgba(255,99,99,0.1);'
-                        f'border:1px solid {T["red"]}44;padding:2px 7px;border-radius:4px">recurring</span>'
-                    ) if _is_recur else ""
-
-                    _cause_short = (_root_cause[:140] + "…") if len(_root_cause) > 140 else _root_cause
-                    _fix_short   = (_fix[:130] + "…") if len(_fix) > 130 else _fix
-                    _needs_expand = len(_root_cause) > 140 or len(_fix) > 130
-
-                    _cause_html = (
-                        f'<p style="font-size:0.8rem;color:{T["text"]};margin:0 0 5px 0;line-height:1.5">'
-                        f'{_cause_short}</p>'
-                    ) if _root_cause else ""
-
-                    _fix_html = (
-                        f'<div style="display:flex;align-items:flex-start;gap:6px;'
-                        f'background:rgba(62,207,142,0.05);border-left:2px solid {T["green"]};'
-                        f'padding:4px 8px;border-radius:0 4px 4px 0;margin-bottom:5px">'
-                        f'<span style="font-size:0.65rem;font-weight:800;text-transform:uppercase;'
-                        f'color:{T["green"]};letter-spacing:0.06em;padding-top:1px;white-space:nowrap">Fix</span>'
-                        f'<span style="font-size:0.77rem;color:{T["text_sub"]};line-height:1.4">{_fix_short}</span>'
-                        f'</div>'
-                    ) if _fix else ""
-
-                    _file_chips = "".join(
-                        f'<code style="font-size:0.66rem;background:{T["surface2"]};'
-                        f'border:1px solid {T["border"]};padding:1px 6px;'
-                        f'border-radius:3px;color:{T["text_muted"]}">{_cf.split("/")[-1]}</code>'
-                        for _cf in _changed_files[:5]
-                    )
-                    _extra_files = (
-                        f'<span style="font-size:0.66rem;color:{T["text_muted"]};padding:1px 4px">'
-                        f'+{len(_changed_files)-5} more</span>'
-                    ) if len(_changed_files) > 5 else ""
-                    _files_html = (
-                        f'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">'
-                        f'{_file_chips}{_extra_files}</div>'
-                    ) if _changed_files else ""
-
-                    st.markdown(
-                        f'<div style="background:{T["surface"]};border:1px solid {_card_border};'
-                        f'border-radius:8px;padding:12px 14px;{_card_left};margin-bottom:10px">'
-                        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">'
-                        f'<div style="background:{_sim_col}18;border:1px solid {_sim_col}44;'
-                        f'border-radius:5px;padding:2px 9px;min-width:46px;text-align:center">'
-                        f'<span style="font-size:0.78rem;font-weight:800;color:{_sim_col}">{_score}% Match</span>'
-                        f'</div>'
-                        f'<div style="flex:1;background:{T["border"]};border-radius:3px;height:5px">'
-                        f'<div style="width:{_score}%;height:5px;border-radius:3px;background:{_sim_col}"></div>'
-                        f'</div>'
-                        f'{_step_badge}{_recur_badge}'
-                        f'<span style="font-size:0.68rem;color:{_src_col};white-space:nowrap">'
-                        f'{_src_icon} {_src_label}</span>'
-                        f'</div>'
-                        f'{_files_html}'
-                        + (f'<hr style="margin:10px 0 8px 0;border:none;border-top:1px solid {T["border2"]}">'
-                           f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["text_muted"]};margin:6px 0 2px 0">Root Cause</p>'
-                           f'<p style="font-size:0.82rem;color:{T["text"]};line-height:1.55;margin:0 0 8px 0">{_root_cause}</p>' if _root_cause else "")
-                        + (f'<p style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:{T["green"]};margin:6px 0 2px 0">Fix</p>'
-                           f'<p style="font-size:0.82rem;color:{T["text_sub"]};line-height:1.55;margin:0">{_fix}</p>' if _fix else "")
-                        + f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
-            else:
-                st.markdown(
-                    f'<div style="background:{T["surface2"]};border:1px solid {T["border"]};'
-                    f'border-radius:8px;padding:24px 16px;text-align:center;margin-top:8px">'
-                    f'<p style="font-size:0.82rem;font-weight:600;color:{T["text"]};margin:0 0 4px 0">'
-                    f'No historical matches yet</p>'
-                    f'<p style="font-size:0.73rem;color:{T["text_muted"]};margin:0">'
-                    f'Run more analyses to build memory.<br>Each run teaches the system your failure patterns.</p>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-
         # ── Recommended Actions ───────────────────────────────────────────────
         _rec_actions = r.get("recommended_actions", [])
         if _rec_actions:
@@ -2866,7 +4653,7 @@ elif page == "Risk Assessment":
 
         # ── Technical Details ─────────────────────────────────────────────────
         st.markdown('<div class="panel">', unsafe_allow_html=True)
-        section_label("TECHNICAL DETAILS", dark=True)
+        section_label("Why Argus thinks this · Details", dark=True)
 
         _hypotheses = r.get("technical_failure_hypotheses", [])
         _has_hypotheses = bool(_hypotheses)
@@ -3010,8 +4797,89 @@ elif page == "Risk Assessment":
                 _slv_col = {"Critical": T["red"], "High": T["red"], "Medium": T["amber"], "Low": T["green"]}
                 _slv_bg  = {"Critical": "#FEF0F0", "High": "#FEF0F0", "Medium": "#FEFAE8", "Low": "#EDFAF3"}
                 _slv_brd = {"Critical": "#FBCECE", "High": "#FBCECE", "Medium": "#F5E0A0", "Low": "#BDECD3"}
+
+                # Derive whether commit has security-relevant files (for override below)
+                _sr_files = st.session_state.get("risk_git_changed_files", []) or []
+                _sr_has_security = any(
+                    k in " ".join(_sr_files).lower()
+                    for k in ("dispatcher", ".any", ".vhost", ".farm", "ui.config",
+                              "security", "auth", "acl", "oauth", "crxde")
+                )
+                # Env status for the step risk override
+                _sr_env_sig   = r.get("_env_signal") or {}
+                _sr_env_ready = _sr_env_sig.get("status", "UNKNOWN") == "READY"
+                _sr_env_dom   = _sr_env_sig.get("dominant_step", "")
+                _sr_env_consec = _sr_env_sig.get("consecutive_failures", 0)
+                _sr_env_broken = _sr_env_sig.get("status", "UNKNOWN") in ("NOT_READY", "CAUTION")
+
+                # Map hero verdict to max allowed step risk level
+                # If hero says CAUTION, no step should show Higher than Medium
+                # This prevents hero=CAUTION + step_summary=High contradictions
+                _hero_max_level = {
+                    "GO":      "Low",
+                    "CAUTION": "Medium",
+                    "HOLD":    "High",
+                }.get(_hero_rec, "High")
+                _level_order = {"Low": 0, "Medium": 1, "High": 2, "Critical": 3}
+
                 for _sr in _step_risks:
+                    _step_name = _sr.get("step", "")
                     _slv = _sr.get("level", "Low")
+                    _sr_rationale = _sr.get("rationale", "")
+
+                    # Cap build step at hero verdict — prevents 12%/CAUTION hero + High step summary
+                    _sr_override_note = ""
+                    if _step_name == "build" and _level_order.get(_slv, 0) > _level_order.get(_hero_max_level, 2):
+                        _slv = _hero_max_level
+                        _sr_override_note = f" [capped to match hero verdict: {_hero_rec}]"
+
+                    # Cap securityTest at Medium when env is READY and no security-relevant
+                    # files changed — LLM may have used miscalibrated rule_scores to set HIGH
+                    if _step_name == "securityTest" and _slv == "High" and _sr_env_ready and not _sr_has_security:
+                        _slv = "Low"
+                        _sr_override_note = " [env healthy + no dispatcher/security changes — override to Low]"
+
+                    # Cap loadTest HIGH → MEDIUM unless structural evidence exists.
+                    # LLM pattern-matches "Java 21 + large diff" → loadTest High (~40% accuracy).
+                    # Only allow High when scorer found dao_migration_perf_risk or java_upgrade_pending.
+                    # These are the structural signals that actually indicate loadTest risk.
+                    if _step_name in ("loadTest", "reportPerformanceTest") and _slv == "High":
+                        _has_perf_structural = any(
+                            k in " ".join(_sr_files).lower() or
+                            k in (_sr.get("rationale","") or "").lower()
+                            for k in ("dao_migration_perf_risk", "java_upgrade_perf_risk",
+                                      "java upgrade pending", "lts migration", "dao migration")
+                        )
+                        # Also check if code_caused_perf flag was set by scorer
+                        _code_caused_perf = (r.get("_code_signal") or {}).get("code_caused_perf", False)
+                        if not _has_perf_structural and not _code_caused_perf:
+                            _slv = "Medium"
+                            _sr_override_note = " [capped: no structural DAO/perf finding — LLM loadTest High requires evidence]"
+
+                    # Require ChromaDB similarity ≥0.65 for loadTest MEDIUM from history alone.
+                    # Lower similarity matches are too noisy for performance step predictions.
+                    if _step_name in ("loadTest",) and _slv == "Medium":
+                        _hist_dom = (_hist_sig.dominant_step if _hist_sig else "")
+                        _hist_score = (_hist_sig.score if _hist_sig else 0.0)
+                        if _hist_dom == "loadTest" and _hist_score < 0.65 and not _code_caused_perf:
+                            _slv = "Low"
+                            _sr_override_note = " [history similarity <65% — insufficient evidence for loadTest Medium]"
+
+                    # When env is broken at this step, add a clear note so developer
+                    # understands "Low" means "commit didn't cause it" not "step will pass"
+                    _env_broken_note = ""
+                    if (
+                        _step_name == _sr_env_dom
+                        and _sr_env_broken
+                        and _sr_env_consec >= 1
+                        and _slv in ("Low", "Medium")
+                    ):
+                        _env_broken_note = (
+                            f' ⚠ Note: environment currently broken at {_step_name} '
+                            f'({_sr_env_consec} consecutive failures — see Environment Health above). '
+                            f'Pipeline will fail here regardless of this commit.'
+                        )
+
                     _scc = _slv_col.get(_slv, T["gray"])
                     _scb = _slv_bg.get(_slv, "#F4F4F8")
                     _scbr = _slv_brd.get(_slv, "#D8D8E8")
@@ -3019,12 +4887,14 @@ elif page == "Risk Assessment":
                         f'<div style="display:flex;align-items:flex-start;gap:0.75rem;'
                         f'padding:0.5rem 0;border-bottom:1px solid {T["border2"]}">'
                         f'<span style="font-size:0.78rem;font-weight:700;color:{T["text_sub"]};'
-                        f'width:110px;flex-shrink:0;padding-top:2px">{_sr.get("step","")}</span>'
+                        f'width:110px;flex-shrink:0;padding-top:2px">{_step_name}</span>'
                         f'<span style="background:{_scb};color:{_scc};border:1px solid {_scbr};'
                         f'padding:2px 8px;border-radius:4px;font-size:0.68rem;font-weight:700;'
                         f'flex-shrink:0;white-space:nowrap">{_slv}</span>'
                         f'<span style="font-size:0.8rem;color:{T["text_sub"]};line-height:1.5">'
-                        f'{_sr.get("rationale","")}</span>'
+                        f'{_sr_rationale}{_sr_override_note}'
+                        + (f'<span style="color:{T["amber"]};font-weight:600">{_env_broken_note}</span>' if _env_broken_note else "")
+                        + f'</span>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
@@ -3088,6 +4958,7 @@ elif page == "Risk Assessment":
                         f'border-radius:10px;padding:0.5rem 1.25rem">{_rows}</div>',
                         unsafe_allow_html=True,
                     )
+        st.markdown(historical_matches_carousel_html(_hist_hits, T), unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -4202,3 +6073,263 @@ elif page == "Static Analysis":
                     f'</div>',
                     unsafe_allow_html=True,
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: Customer Onboarding
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Repo Settings":
+    section_header("Customer Onboarding", "Add or configure a customer — all settings saved securely on the server")
+
+    st.caption(
+        "Passwords are stored in `data/.secrets.json` (gitignored, server-only). "
+        "Customer config saved to `data/customer_config.json`. "
+        "After saving, the customer appears in the sidebar selector immediately."
+    )
+
+    # ── Tab: Add New / Edit Existing ─────────────────────────────────────────
+    _existing_names = list(_load_customers().keys())
+    _ob_tab, _list_tab = st.tabs(["Add / Edit Customer", "All Customers"])
+
+    with _ob_tab:
+        # Pre-fill from existing customer if editing
+        _edit_mode = st.selectbox(
+            "Edit existing or add new",
+            ["— Add new customer —"] + _existing_names,
+            key="onboard_edit_sel"
+        )
+        _prefill = {}
+        _prefill_pwd = ""
+        if _edit_mode != "— Add new customer —":
+            _prefill = _load_customers().get(_edit_mode, {})
+            _secrets_data = json.loads(_SECRETS_PATH.read_text()) if _SECRETS_PATH.exists() else {}
+            _prefill_pwd = _secrets_data.get(_edit_mode, {}).get("git_password", "")
+
+        with st.form("customer_onboard_form", clear_on_submit=False):
+            st.markdown("#### Customer Info")
+            _cust_name    = st.text_input("Customer name", value=_edit_mode if _edit_mode != "— Add new customer —" else "", placeholder="e.g. Bajaj Allianz")
+            _cust_short   = _prefill.get("short", "")
+            _oc3, _oc4    = st.columns(2)
+            _prog_id      = _oc3.text_input("Adobe CM Program ID", value=_prefill.get("program_id",""), placeholder="e.g. 19905")
+            _org_id       = _oc4.text_input("Adobe Org ID", value=_prefill.get("org_id",""), placeholder="e.g. XXXXXX@AdobeOrg")
+            _oc5, _oc6    = st.columns(2)
+            _pip_prod     = _oc5.text_input("Production Pipeline ID", value=_prefill.get("pipeline_prod",""), placeholder="e.g. 2357452")
+            _pip_dev      = _oc6.text_input("Dev Pipeline ID", value=_prefill.get("pipeline_dev",""), placeholder="e.g. 47202398")
+
+            st.markdown("#### Git Repository")
+            st.caption("Find these in Adobe Cloud Manager → Your Program → Repositories")
+            _gc1, _gc2    = st.columns(2)
+            _git_url      = _gc1.text_input("Git URL", value=_prefill.get("git_url",""), placeholder="https://git.cloudmanager.adobe.com/org/repo/")
+            _git_branch   = _gc2.text_input("Deploy Branch", value=_prefill.get("git_branch","master"), placeholder="master or stage_and_prod")
+            _gc3, _gc4    = st.columns(2)
+            _git_user     = _gc3.text_input("Git Username", value=_prefill.get("git_username",""), placeholder="vanssharma-adobe-com")
+            _git_pwd      = _gc4.text_input("Git Password", value=_prefill_pwd, type="password",
+                                             placeholder="Generate in CM → Repositories → Generate password",
+                                             help="Stored in data/.secrets.json — never committed to git")
+            # Repo path — optional: leave blank to auto-generate, or point to existing clone
+            _default_repo_name = _prefill.get("git_url","").rstrip("/").split("/")[-1] if _prefill.get("git_url") else ""
+            _default_path = _prefill.get("git_local_dir","") or (
+                f"{os.getenv('REPOS_BASE_DIR', str(Path.home() / 'projects'))}/{_default_repo_name}"
+                if _default_repo_name else ""
+            )
+            _repo_already_exists = bool(_default_path and (Path(_default_path) / ".git").exists())
+            _git_local = st.text_input(
+                "Local repo path (optional)",
+                value=_default_path,
+                placeholder=f"{os.getenv('REPOS_BASE_DIR', '/opt/repos')}/repo-name",
+                help="Leave as-is to clone automatically. If the repo is already cloned on this server, point to that path to avoid a second clone."
+            )
+            if _repo_already_exists and _git_local == _default_path:
+                st.success(f"Repo already cloned at `{_git_local}` — will fetch updates only, no duplicate clone.")
+
+            # Always use discovered submodules — auto-detected from .gitmodules after clone
+            _rc_cfg = json.loads(Path("data/repo_config.json").read_text()) if Path("data/repo_config.json").exists() else {}
+            _new_sms = _rc_cfg.get(_edit_mode if _edit_mode != "— Add new customer —" else "", {}).get("submodules", [])
+
+            st.markdown("")
+            _save_btn = st.form_submit_button("💾 Save & Fetch Repository", type="primary", use_container_width=True)
+
+            if _save_btn:
+                if not _cust_name or not _prog_id or not _git_url:
+                    st.error("Customer name, Program ID, and Git URL are required.")
+                else:
+                    _tenant_id = _cust_short.lower() if _cust_short else _cust_name.lower().replace(" ", "")[:6]
+                    # Auto-generate local path from git URL if not provided
+                    if not _git_local and _git_url:
+                        _repo_name = _git_url.rstrip("/").split("/")[-1]
+                        _repos_base2 = os.getenv("REPOS_BASE_DIR", str(Path.home() / "projects"))
+                        _git_local = f"{_repos_base2}/{_repo_name}"
+                    _new_cfg = {
+                        "program_id":    _prog_id,
+                        "pipeline_prod": _pip_prod,
+                        "pipeline_dev":  _pip_dev,
+                        "org_id":        _org_id,
+                        "tenant_id":     _tenant_id,
+                        "short":         _cust_short.upper() if _cust_short else _cust_name[:4].upper(),
+                        "git_url":       _git_url,
+                        "git_username":  _git_user,
+                        "git_local_dir": _git_local,
+                        "git_branch":    _git_branch,
+                        "splunk_index":  "ams_linux-os",
+                    }
+                    _save_customer(_cust_name, _new_cfg, _git_pwd)
+
+                    # Update repo_config.json with submodules
+                    if _new_sms or _edit_mode != "— Add new customer —":
+                        _rc = json.loads(Path("data/repo_config.json").read_text()) if Path("data/repo_config.json").exists() else {}
+                        _rc[_cust_name] = {**_new_cfg, "submodules": _new_sms}
+                        Path("data/repo_config.json").write_text(json.dumps(_rc, indent=2))
+
+                    st.success(f"✓ Saved **{_cust_name}**")
+
+                    # Auto-clone/fetch the repo
+                    if _git_url and _git_local and _git_user and _git_pwd:
+                        with st.spinner(f"Fetching repository for {_cust_name}..."):
+                            try:
+                                import subprocess as _sp
+                                from urllib.parse import quote as _q
+                                _auth_url = _git_url.replace("https://", f"https://{_q(_git_user,safe='')}:{_q(_git_pwd,safe='')}@")
+                                _lp = Path(_git_local)
+                                if not (_lp / ".git").exists():
+                                    _lp.mkdir(parents=True, exist_ok=True)
+                                    _r = _sp.run(["git", "clone", _auth_url, str(_lp)], capture_output=True, text=True, timeout=300,
+                                                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                                    if _r.returncode == 0:
+                                        st.success(f"✓ Repository cloned to {_git_local}")
+                                        # Auto-discover submodules from .gitmodules
+                                        try:
+                                            from connectors.submodule_connector import auto_populate_submodules_in_config
+                                            _sm_added = auto_populate_submodules_in_config(
+                                                _cust_name, _git_local,
+                                                base_local_dir=str(Path(_git_local).parent / "submodules")
+                                            )
+                                            if _sm_added:
+                                                st.info(f"Auto-discovered {_sm_added} submodule(s) from .gitmodules")
+                                        except Exception:
+                                            pass
+                                    else:
+                                        st.warning(f"Clone failed: {_r.stderr[:200]}")
+                                else:
+                                    _r = _sp.run(["git", "fetch", "--all", "--prune"],
+                                                 capture_output=True, text=True, timeout=120, cwd=str(_lp),
+                                                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"})
+                                    st.success(f"✓ Repository fetched")
+                                    # Auto-discover submodules on fetch too
+                                    try:
+                                        from connectors.submodule_connector import auto_populate_submodules_in_config
+                                        _sm_added = auto_populate_submodules_in_config(
+                                            _cust_name, _git_local,
+                                            base_local_dir=str(Path(_git_local).parent / "submodules")
+                                        )
+                                        if _sm_added:
+                                            st.info(f"Auto-discovered {_sm_added} submodule(s) from .gitmodules")
+                                    except Exception:
+                                        pass
+                            except Exception as _ge:
+                                st.warning(f"Git operation: {_ge}. You can fetch manually later.")
+
+                    st.success(f"**{_cust_name}** has been added successfully.")
+                    st.info(
+                        f"**Heads up — new customer cold start:** This agent learns from historical pipeline data. "
+                        f"Since **{_cust_name}** has no history in the system yet, early predictions will rely primarily "
+                        f"on code structure analysis and environment signals — the historical pattern matching signal "
+                        f"will be empty until real pipeline runs accumulate. "
+                        f"Click **Initialize Historical Data** below to bootstrap from the last 30 days of Splunk data, "
+                        f"which significantly improves prediction quality from day one."
+                    )
+
+        # ── Cold Start Initialization ─────────────────────────────────────────
+        if _edit_mode != "— Add new customer —":
+            st.markdown("---")
+            st.markdown("#### Initialize Historical Data")
+            st.caption(
+                "Runs once after setup. Pulls last 30 days of Splunk data, "
+                "creates resolved predictions for calibration, and ingests "
+                "historical failure patterns into ChromaDB. Takes 2-5 minutes."
+            )
+            _cust_data = _load_customers().get(_edit_mode, {})
+            _init_ready = bool(
+                _cust_data.get("program_id") and
+                _cust_data.get("git_local_dir") and
+                Path(_cust_data["git_local_dir"]).exists()
+            )
+            if not _init_ready:
+                st.warning("Save the customer and ensure the repository is cloned before initializing.")
+            elif st.button("Initialize Historical Data", type="primary", key="cold_start_btn"):
+                _progress_msgs = []
+                def _on_progress(msg):
+                    _progress_msgs.append(msg)
+
+                with st.spinner("Initializing — fetching Splunk data and processing history..."):
+                    try:
+                        # Load Splunk data for this customer
+                        _old_pid = os.environ.get("PROGRAM_ID", "")
+                        os.environ["PROGRAM_ID"] = _cust_data["program_id"]
+                        os.environ["GIT_LOCAL_DIR"] = _cust_data["git_local_dir"]
+
+                        from connectors.splunk_connector import fetch_pipeline_list, fetch_failed_steps
+                        import pandas as _pd_cs
+                        _cs_pdf = fetch_pipeline_list(int(_cust_data["program_id"]))
+                        _cs_fdf = fetch_failed_steps(int(_cust_data["program_id"]))
+
+                        from analysis.cold_start import initialize_customer
+                        _cs_results = initialize_customer(
+                            program_id    = _cust_data["program_id"],
+                            tenant_id     = _cust_data.get("tenant_id", ""),
+                            pipeline_df   = _cs_pdf,
+                            failed_df     = _cs_fdf,
+                            git_local_dir = _cust_data["git_local_dir"],
+                            git_branch    = _cust_data.get("git_branch", "master"),
+                            on_progress   = _on_progress,
+                            git_url       = _cust_data.get("git_url", ""),
+                            git_username  = _cust_data.get("git_username", ""),
+                            git_password  = _cust_data.get("git_password", ""),
+                        )
+
+                        if _old_pid:
+                            os.environ["PROGRAM_ID"] = _old_pid
+
+                        _retro = _cs_results.get("retroactive", {})
+                        _chroma = _cs_results.get("chromadb", {})
+                        st.success(
+                            f"Initialization complete for **{_edit_mode}**\n\n"
+                            f"- **{_retro.get('created', 0)}** historical prediction records created\n"
+                            f"- **{_chroma.get('ingested', 0)}** failure patterns ingested into ChromaDB\n\n"
+                            f"Historical Match signal is now active. Confidence scores will be higher."
+                        )
+                    except Exception as _cse:
+                        st.error(f"Initialization failed: {_cse}")
+                        if _progress_msgs:
+                            st.code("\n".join(_progress_msgs[-10:]))
+
+            # Delete customer
+            st.markdown("")
+            _rm_key1 = f"rm_cust_a_{_edit_mode}"
+            if st.button(f"Remove {_edit_mode}", type="secondary", key=_rm_key1):
+                _delete_customer(_edit_mode)
+                st.success(f"Removed {_edit_mode}")
+                st.rerun()
+
+        # Delete customer
+        if _edit_mode != "— Add new customer —":
+            st.markdown("---")
+            _rm_key2 = f"rm_cust_b_{_edit_mode}"
+            if st.button(f"Remove {_edit_mode}", type="secondary", key=_rm_key2):
+                _delete_customer(_edit_mode)
+                st.success(f"Removed {_edit_mode}")
+                st.rerun()
+
+    with _list_tab:
+        _all = _load_customers()
+        if not _all:
+            st.info("No customers configured yet.")
+        for _cn, _cc in _all.items():
+            _has_git = bool(_cc.get("git_local_dir") and Path(_cc["git_local_dir"]).exists())
+            _status  = "Repo cloned" if _has_git else "Repo not found locally"
+            with st.expander(f"{_cc.get('short','?')} — {_cn}  |  Program {_cc.get('program_id','?')}  |  {_status}"):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Program ID", _cc.get("program_id","—"))
+                c2.metric("Prod Pipeline", _cc.get("pipeline_prod","—"))
+                c3.metric("Dev Pipeline", _cc.get("pipeline_dev","—"))
+                st.code(_cc.get("git_url","—"), language=None)
+                st.caption(f"Branch: {_cc.get('git_branch','master')} | Local: {_cc.get('git_local_dir','—')}")

@@ -50,6 +50,7 @@ class GitContext(BaseModel):
     title: str = ""
     body: str = ""
     author: str = ""
+    commit_date: str = ""   # ISO date string e.g. "2026-06-17"
     changed_files: List[str] = Field(default_factory=list)
     aem_modules_touched: List[str] = Field(default_factory=list)
     diff_excerpt: str = ""

@@ -173,6 +173,45 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
             "NEAR ZERO — no files changed. No commit-caused build risk possible."
         )
 
+    # Submodule pointer-only commit (parent has no app code)
+    _is_submodule_pointer_only = (
+        all(
+            "pom.xml" in f.lower() or ".gitmodules" in f.lower() or
+            not any(f.lower().endswith(ext) for ext in [".java", ".js", ".ts", ".jsx", ".tsx", ".css", ".scss"])
+            for f in changed_files
+        )
+        and len(changed_files) > 0
+        and not _is_subtree
+    )
+    if _is_submodule_pointer_only:
+        commit_profile_dict["is_submodule_pointer_only"] = True
+        # Check if structural_findings already found service/test issues in submodule scan
+        _has_service_findings = any(
+            sf.get("check", "") in (
+                "service_without_test_update", "autowired_missing_test_mock",
+                "injectmocks_without_mock", "core_java_without_test_update",
+            )
+            for sf in (bundle_dict.get("structural_findings") or [])
+        )
+        if _has_service_findings:
+            # Structural scan found service changes → build risk is MEDIUM, not LOW
+            # The submodule has real code changes that may fail surefire tests
+            commit_profile_dict["build_risk_override"] = (
+                "MEDIUM — parent bumps submodule pointer, but structural analysis found "
+                "service implementations changed without test updates inside the submodule. "
+                "The most common HDFC build failure mode: surefire tests fail at runtime "
+                "(NPE, assertion failure, Mockito verification failure) because service logic "
+                "changed but existing tests weren't updated. Set build to Medium, not Low."
+            )
+        else:
+            commit_profile_dict["build_risk_override"] = (
+                "LOW — parent repo only bumps submodule pointer SHAs and pom.xml. "
+                "No app code compiled from parent. Build risk is LOW. "
+                "Key point: deleted test files do NOT cause build failures — they only reduce test coverage. "
+                "Real risk is at DEPLOY (bundle ordering) not BUILD. "
+                "Do NOT rate build step as High or Medium based on submodule content alone."
+            )
+
     # Classify error_details
     error_details = bundle_dict.get("error_details") or []
     try:
@@ -218,6 +257,9 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
         # 3. ChromaDB similar incidents (added later)
         # 4. Structural code analysis (advisory, not override)
         "environment_readiness": env_readiness,          # #1 — env state drives securityTest risk
+        "pipeline_validation": {
+            "java_upgrade_pending": bool(bundle_dict.get("java_upgrade_pending")),
+        },
         "historical_baseline": historical_baseline,      # #2 — Splunk failure history per step
         "high_signal_failures": high_signal_slim,        # #2b — classified error signals
         "infra_noise_failures": infra_noise_slim,        # noise — label as infra, not code risk
