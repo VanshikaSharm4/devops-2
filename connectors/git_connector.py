@@ -20,6 +20,14 @@ MAX_DIFF_BYTES = 500_000
 _GIT_FETCH_TTL_MIN = int(os.getenv("GIT_FETCH_TTL_MINUTES", "10"))
 _last_fetch_ts: dict = {}   # {repo_dir: timestamp}
 
+# Dedup: track which repos were already checked in this Python process invocation.
+# clone_or_update() is called by every git function independently.  Within a single
+# analysis run (one Streamlit request) they all fire within milliseconds — the TTL
+# skip is cheap but still prints 5+ log lines.  A per-repo "checked this tick" flag
+# silences the noise without changing any behaviour.
+_checked_this_tick: dict = {}  # {repo_dir: timestamp}  — cleared every 30s
+_TICK_WINDOW_S = 30
+
 
 # ── Config from .env ─────────────────────────────────────────
 
@@ -150,12 +158,20 @@ def clone_or_update() -> str:
         return str(repo_dir)
 
     # Repo exists — only fetch if TTL has expired (per-repo, not global)
-    global _last_fetch_ts
+    global _last_fetch_ts, _checked_this_tick
     _repo_key = str(repo_dir)
-    elapsed_min = (time.time() - _last_fetch_ts.get(_repo_key, 0.0)) / 60
-    if elapsed_min < _GIT_FETCH_TTL_MIN:
-        print(f"  [git] Skipping fetch — last fetch {elapsed_min:.1f} min ago (TTL {_GIT_FETCH_TTL_MIN} min)")
+
+    # Dedup: if we already checked this repo within the last _TICK_WINDOW_S seconds,
+    # skip silently — many git functions call clone_or_update() independently and
+    # generate identical "Skipping fetch" log spam within the same analysis request.
+    _now = time.time()
+    if (_now - _checked_this_tick.get(_repo_key, 0.0)) < _TICK_WINDOW_S:
         return str(repo_dir)
+    _checked_this_tick[_repo_key] = _now
+
+    elapsed_min = (_now - _last_fetch_ts.get(_repo_key, 0.0)) / 60
+    if elapsed_min < _GIT_FETCH_TTL_MIN:
+        return str(repo_dir)  # TTL not expired — silent skip
 
     try:
         print("  [git] Fetching latest commits from remote...")
@@ -217,8 +233,17 @@ def clone_or_update() -> str:
         _last_fetch_ts[_repo_key] = time.time()
 
     except Exception as e:
+        _err_str = str(e)
         print(f"  [git] Sync failed ({type(e).__name__}: {e}) — using local commits.")
-        _write_sync_state(repo_dir, synced=False, error=str(e))
+        _write_sync_state(repo_dir, synced=False, error=_err_str)
+        # Auth failure: set TTL to 10 min so we don't immediately retry on every call.
+        # Retrying an auth failure is pointless — it will fail the same way every time
+        # until the token is rotated. Without this, every SHA lookup triggers a full
+        # fetch loop that wastes 45+ seconds and blocks the UI.
+        if "authentication failed" in _err_str.lower() or "403" in _err_str or "401" in _err_str:
+            print(f"  [git] Auth failure detected — suppressing retries for 10 min. "
+                  f"Update the git token in data/.secrets.json or .env.")
+            _last_fetch_ts[_repo_key] = time.time()  # reset TTL → won't retry for TTL minutes
         _last_fetch_ts[_repo_key] = time.time()  # don't retry immediately on failure either
 
     return str(repo_dir)
@@ -324,16 +349,49 @@ def get_commit_diff(repo: Optional[str], sha: str) -> Dict[str, Any]:
     # is requested and not found, we MUST refetch — the commit was pushed after the
     # last TTL fetch. Reset TTL so clone_or_update fetches immediately.
     if not _sha_exists(sha, repo_dir):
-        _repo_key = str(_local_dir(repo_dir))
-        _last_fetch_ts[_repo_key] = 0.0  # reset TTL → force fetch
-        print(f"  [git] SHA {sha[:12]} not found — resetting TTL and fetching from remote...")
-        clone_or_update()  # now runs the fetch since TTL was reset
-        if not _sha_exists(sha, repo_dir):
-            # Still not found after fetch — try targeted fetch of just this SHA
-            try:
-                _fetch_all(repo_dir)
-            except Exception as _fe:
-                print(f"  [git] Fetch failed: {_fe}")
+        # ── Targeted fetch first: fetch ONLY this SHA's objects ──────────────
+        # Much faster than fetching all branches (+refs/heads/*) which can take
+        # 30-60s on large repos. Direct SHA fetch typically completes in 1-3s.
+        print(f"  [git] SHA {sha[:12]} not found — trying targeted fetch...")
+        _repo_path = str(_local_dir(repo_dir))
+        _auth = _auth_url()
+        _env  = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+        _targeted_ok = False
+        _auth_failed = False
+        try:
+            _r = subprocess.run(
+                ["git", "fetch", "--depth=1", _auth, sha],
+                cwd=_repo_path, capture_output=True, text=True,
+                timeout=15, env=_env,
+            )
+            if _r.returncode == 0 and _sha_exists(sha, repo_dir):
+                _targeted_ok = True
+                print(f"  [git] SHA {sha[:12]} fetched via targeted fetch.")
+                _last_fetch_ts[_repo_path] = time.time()
+            elif _r.returncode != 0:
+                _stderr = (_r.stderr or "").lower()
+                if "authentication failed" in _stderr or "403" in _stderr or "401" in _stderr:
+                    _auth_failed = True
+        except Exception:
+            pass
+
+        if _auth_failed:
+            # Auth failure — retrying the full fetch will fail the same way.
+            # Set TTL so we don't loop. Surface a clear error immediately.
+            _last_fetch_ts[_repo_path] = time.time()
+            raise RuntimeError(
+                f"Git authentication failed for this repository. "
+                f"The token has expired — update it in data/.secrets.json or .env "
+                f"(Adobe CM → Repositories → Generate password)."
+            )
+
+        if not _targeted_ok:
+            # Targeted fetch failed (not auth — server doesn't support SHA fetch) —
+            # fall back to full branch fetch via clone_or_update
+            _last_fetch_ts[_repo_path] = 0.0  # reset TTL → force full fetch
+            print(f"  [git] Targeted fetch failed — falling back to full fetch...")
+            clone_or_update()
+
         if not _sha_exists(sha, repo_dir):
             raise RuntimeError(
                 f"SHA {sha[:12]} not found after fetch. "
@@ -734,6 +792,18 @@ def read_submodule_file(
     Returns:
         File content as string, or None if unavailable.
     """
+    # ── Strategy 1: Bitbucket REST API (no clone, no disk) ──────────────────
+    if remote_url and file_path:
+        try:
+            from connectors.bitbucket_connector import parse_cm_git_url, read_file_at_sha
+            _project, _repo = parse_cm_git_url(remote_url)
+            return read_file_at_sha(_project, _repo, submodule_sha, file_path,
+                                    os.getenv("CM_GIT_USERNAME", ""),
+                                    os.getenv("CM_GIT_PASSWORD", ""))
+        except Exception as _api_err:
+            print(f"  [git] read_submodule_file API failed ({_api_err}) — falling back to git fetch")
+
+    # ── Strategy 2: fetch objects into parent repo object store ──────────────
     repo = parent_repo_dir or os.getenv("GIT_LOCAL_DIR", "")
     if not repo or not os.path.isdir(os.path.join(repo, ".git")):
         return None
@@ -784,13 +854,25 @@ def list_submodule_files(
     List files in a submodule directory at a specific SHA.
     Uses the same fetch-into-parent approach as read_submodule_file.
     """
+    # ── Strategy 1: Bitbucket REST API (no clone, no disk) ──────────────────
+    if remote_url:
+        try:
+            from connectors.bitbucket_connector import parse_cm_git_url, list_files_at_sha
+            _project, _repo = parse_cm_git_url(remote_url)
+            return list_files_at_sha(_project, _repo, submodule_sha,
+                                     os.getenv("CM_GIT_USERNAME", ""),
+                                     os.getenv("CM_GIT_PASSWORD", ""),
+                                     directory=directory, pattern=pattern)
+        except Exception as _api_err:
+            print(f"  [git] list_submodule_files API failed ({_api_err}) — falling back to git ls-tree")
+
+    # ── Strategy 2: use parent repo object store ──────────────────────────────
     repo = parent_repo_dir or os.getenv("GIT_LOCAL_DIR", "")
     if not repo or not os.path.isdir(os.path.join(repo, ".git")):
         return []
 
-    # Ensure objects are fetched
-    if not read_submodule_file.__wrapped__ if hasattr(read_submodule_file, '__wrapped__') else True:
-        read_submodule_file(submodule_name, submodule_sha, "", remote_url, repo)
+    # Ensure objects are fetched via read_submodule_file (which also tries API)
+    read_submodule_file(submodule_name, submodule_sha, "", remote_url, repo)
 
     _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
     try:

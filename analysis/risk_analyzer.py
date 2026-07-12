@@ -91,7 +91,9 @@ def _resolve_submodule_customer_name(bundle, program_id: str = "") -> str:
             if str(cfg.get("program_id", "")) == pid:
                 return cfg_name
         try:
-            _cfg_path = Path(_os.getenv("CUSTOMER_CONFIG_PATH", "data/customer_config.json"))
+            from analysis.paths import customer_config_path as _ccp
+            _env_cfg = _os.getenv("CUSTOMER_CONFIG_PATH", "")
+            _cfg_path = Path(_env_cfg) if _env_cfg else _ccp()
             if _cfg_path.exists():
                 import json as _json
                 for cfg_name, cfg in _json.loads(_cfg_path.read_text()).items():
@@ -487,28 +489,21 @@ def run_pre_deploy_risk(
     # Use cached LLM output if available — skip expensive LLM call
     if bundle.__dict__.get("_from_llm_cache") and bundle.__dict__.get("_cached_report"):
         report = bundle.__dict__["_cached_report"]
-    elif (
-        _pre_score and
-        _pre_score.recommendation == "HOLD" and
-        _pre_score.confidence >= 0.80 and
-        _pre_score.primary_driver in ("environment", "code") and
-        not bundle.__dict__.get("submodule_diffs")  # still call LLM if we have submodule code to analyze
-    ):
-        # Env/code signal is certain enough — build a minimal report without LLM
-        from models.risk_report import RiskReport, StepRisk
-        print(f"  [risk] Skipping LLM — {_pre_score.primary_driver} signal is HOLD at {int(_pre_score.confidence*100)}% confidence")
-        _risk_map = {"GO": "Low", "CAUTION": "Medium", "HOLD": "High"}
-        report = RiskReport(
-            risk_level=_risk_map[_pre_score.recommendation],
-            confidence_score=int(_pre_score.confidence * 100),
-            commit_sha=commit_sha or "",
-            most_likely_failure_step=_pre_score.env.dominant_step or _pre_score.historical.dominant_step or "unknown",
-            modules_at_risk=bundle.git_context.aem_modules_touched if bundle.git_context else [],
-            step_risks=[],
-            recommended_actions=[_pre_score.env.fix or _pre_score.confidence_basis],
-            narrative=f"{_pre_score.confidence_basis} (LLM skipped — signal confidence ≥80%)",
-        )
     else:
+        # Always run the LLM — even when environment has 13 consecutive failures.
+        #
+        # Previously: skipped LLM when pre-score was HOLD ≥80%. This was wrong:
+        # 1. The developer's CODE may also have issues — they need to know even if
+        #    the environment is broken. Run 14 might pass the env issue but hit a
+        #    code bug we never told them about.
+        # 2. Environment signals are noisy (cancelled runs, infra spikes). Run 14
+        #    can pass after 13 failures. Skipping LLM means no code analysis at all.
+        # 3. The environment advisory is shown separately on the dashboard — it
+        #    doesn't need to suppress code analysis to be visible.
+        #
+        # The LLM sees the environment signal via environment_readiness in the prompt
+        # and will naturally weight it. The dashboard shows env as a separate card.
+        print(f"  [risk] Running LLM analysis (pre-score: {_pre_score.recommendation if _pre_score else 'n/a'})")
         report = run_risk_analysis(bundle_dict)
 
     # ── score_risk() overrides: risk level, confidence, step ──────────────────

@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-BM25_INDEX_PATH = os.getenv("BM25_INDEX_PATH", "data/cache/bm25_index.pkl")
+def _default_bm25_path() -> str:
+    from analysis.paths import cache_dir
+    return str(cache_dir() / "bm25_index.pkl")
+
+
+BM25_INDEX_PATH = os.getenv("BM25_INDEX_PATH") or _default_bm25_path()
 BM25_TTL_MIN = int(os.getenv("BM25_INDEX_TTL_MIN", "60"))
 
 

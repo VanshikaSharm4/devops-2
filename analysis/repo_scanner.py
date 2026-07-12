@@ -115,7 +115,8 @@ def check_osgi_service_exists(repo_dir: str, service_interface: str) -> bool:
     try:
         import json as _json
         from pathlib import Path as _Path
-        _rc = _json.loads(_Path("data/repo_config.json").read_text())
+        from analysis.paths import repo_config_path as _rcp
+        _rc = _json.loads(_rcp().read_text())
         # Find the customer config that matches this repo_dir
         for _cname, _ccfg in _rc.items():
             if _ccfg.get("git_local_dir") == repo_dir:

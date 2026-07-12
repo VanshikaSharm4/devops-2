@@ -17,12 +17,17 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-CHROMA_DIR = os.getenv("CHROMA_DIR", str(Path(__file__).resolve().parent.parent / "data" / "chroma_db"))
+def _chroma_dir() -> str:
+    _env = os.getenv("CHROMA_DIR", "")
+    if _env:
+        return _env
+    from analysis.paths import chroma_dir
+    return str(chroma_dir())
 
 
 def _client():
     import chromadb
-    return chromadb.PersistentClient(path=CHROMA_DIR)
+    return chromadb.PersistentClient(path=_chroma_dir())
 
 
 def _collection(name: str):

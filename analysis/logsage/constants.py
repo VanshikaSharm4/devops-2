@@ -50,10 +50,12 @@ QUERY_TOKEN_LIMIT = int(os.getenv("LOGSAGE_QUERY_TOKEN_LIMIT", "3000"))
 
 SUCCESS_TEMPLATE_COUNT = int(os.getenv("LOGSAGE_SUCCESS_TEMPLATE_COUNT", "3"))
 
-DRAIN_CACHE_DIR = os.getenv(
-    "LOGSAGE_DRAIN_CACHE_DIR",
-    "data/cache/drain_templates",
-)
+def _default_drain_cache_dir() -> str:
+    from analysis.paths import cache_dir
+    return str(cache_dir() / "drain_templates")
+
+
+DRAIN_CACHE_DIR = os.getenv("LOGSAGE_DRAIN_CACHE_DIR") or _default_drain_cache_dir()
 
 # Failure pattern max weight
 FAILURE_PATTERN_WEIGHT = 10

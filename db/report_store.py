@@ -31,7 +31,12 @@ def _db_path() -> str:
     Resolve DB path. On Eris set ARGUS_DB_PATH=/persistent/argus/argus.db
     so the file survives container restarts. Defaults to data/argus.db.
     """
-    path = os.getenv("ARGUS_DB_PATH", "data/argus.db")
+    _env = os.getenv("ARGUS_DB_PATH", "")
+    if _env:
+        path = _env
+    else:
+        from analysis.paths import sqlite_db_path
+        path = str(sqlite_db_path())
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     return path
 

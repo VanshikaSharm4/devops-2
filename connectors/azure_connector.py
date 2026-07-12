@@ -5,6 +5,7 @@ from typing import Optional
 
 from azure.storage.fileshare import ShareClient, ShareFileClient
 from dotenv import load_dotenv
+from analysis.paths import cache_dir
 
 load_dotenv()
 
@@ -13,13 +14,19 @@ AZURE_CONNECTION_STRING = (
     or os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 )
 
+
+def _log_cache_dir() -> Path:
+    """Resolve log cache directory lazily so ARGUS_DATA_DIR is respected."""
+    return cache_dir() / "logs"
+
+
 # Disk cache for Azure log files — avoids re-downloading the same log on every click
-_LOG_CACHE_DIR = Path("data/cache/logs")
+_LOG_CACHE_DIR = None  # replaced by _log_cache_dir() calls below
 
 
 def _log_cache_path(share_name: str, file_path: str) -> Path:
     key = hashlib.md5(f"{share_name}:{file_path}".encode()).hexdigest()
-    return _LOG_CACHE_DIR / f"{key}.txt"
+    return _log_cache_dir() / f"{key}.txt"
 
 
 def _read_log_cache(share_name: str, file_path: str) -> Optional[str]:
@@ -30,7 +37,7 @@ def _read_log_cache(share_name: str, file_path: str) -> Optional[str]:
 
 
 def _write_log_cache(share_name: str, file_path: str, content: str) -> None:
-    _LOG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _log_cache_dir().mkdir(parents=True, exist_ok=True)
     _log_cache_path(share_name, file_path).write_text(content, encoding="utf-8")
 
 

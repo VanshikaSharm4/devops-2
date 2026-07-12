@@ -19,13 +19,23 @@ from connectors.splunk_csv_reader import (
 )
 from models.bundle import AnalysisBundle, ErrorDetail, ExecutionSummary
 from parsers.log_parser import parse_log
+from analysis.paths import cache_dir, splunk_exports_dir
 
-PIPELINE_CSV    = "data/splunk_exports/pipelines-list.csv"
-FAILED_STEP_CSV = "data/splunk_exports/first-failed-steps.csv"
-SHARE_NAMES_CSV = "data/splunk_exports/share-names.csv"
+
+def _pipeline_csv() -> str:
+    return str(splunk_exports_dir() / "pipelines-list.csv")
+
+
+def _failed_step_csv() -> str:
+    return str(splunk_exports_dir() / "first-failed-steps.csv")
+
+
+def _share_names_csv() -> str:
+    return str(splunk_exports_dir() / "share-names.csv")
+
 
 # Disk cache — one file per program ID so switching customers never loses data
-CACHE_DIR     = Path("data/cache")
+CACHE_DIR     = cache_dir()
 CACHE_TTL_MIN = int(os.getenv("SPLUNK_CACHE_TTL_MINUTES", "30"))
 
 
@@ -190,11 +200,17 @@ def load_live_data(
 
 
 def load_csv_data(
-    pipeline_csv: str = PIPELINE_CSV,
-    failed_step_csv: str = FAILED_STEP_CSV,
-    share_names_csv: str = SHARE_NAMES_CSV,
+    pipeline_csv: str = None,
+    failed_step_csv: str = None,
+    share_names_csv: str = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
     """Load all three Splunk CSV exports. CSV-only — no Splunk API."""
+    if pipeline_csv is None:
+        pipeline_csv = str(splunk_exports_dir() / "pipelines-list.csv")
+    if failed_step_csv is None:
+        failed_step_csv = str(splunk_exports_dir() / "first-failed-steps.csv")
+    if share_names_csv is None:
+        share_names_csv = str(splunk_exports_dir() / "share-names.csv")
     from connectors.splunk_csv_reader import (
         load_failed_steps,
         load_pipeline_list,

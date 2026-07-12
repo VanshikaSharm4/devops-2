@@ -16,7 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-_CACHE_DIR    = Path(os.getenv("ASSESSMENT_CACHE_DIR", "data/cache/assessments"))
+def _resolve_cache_dir() -> Path:
+    from analysis.paths import cache_dir
+    _env = os.getenv("ASSESSMENT_CACHE_DIR", "")
+    return Path(_env) if _env else cache_dir() / "assessments"
+
+
+_CACHE_DIR    = _resolve_cache_dir()
 _TTL_HOURS    = int(os.getenv("ASSESSMENT_CACHE_TTL_HOURS", "24"))
 
 # Bump this string whenever scorer logic changes (make_decision, confidence

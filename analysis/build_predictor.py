@@ -578,6 +578,13 @@ def _check_service_without_test_update(
     prod_services: List[tuple[str, str]] = []
     test_files_changed: List[str] = []
 
+    # Track test files with their change direction:
+    # "added" = new assertions added (proper update)
+    # "deleted_only" = only lines removed (tests gutted — HIGH risk)
+    # "mixed" = both added and deleted (refactored — MEDIUM risk)
+    test_files_added:    List[str] = []   # test files with new assertions
+    test_files_degraded: List[str] = []   # test files where tests were only deleted
+
     for filepath, lines in sections.items():
         fl = filepath.lower()
         if not fl.endswith(".java") or not _section_has_substantive_java_changes(lines):
@@ -585,6 +592,21 @@ def _check_service_without_test_update(
         basename = filepath.split("/")[-1]
         if basename.endswith("Test.java") or "/test/" in fl or "/test/java/" in fl:
             test_files_changed.append(basename)
+            # Determine whether the test was improved or gutted
+            _added_lines   = [l for l in lines if l.startswith("+") and not l.startswith("+++")]
+            _removed_lines = [l for l in lines if l.startswith("-") and not l.startswith("---")]
+            _has_new_assertions = any(
+                kw in l for l in _added_lines
+                for kw in ("@Test", "assert", "verify(", "when(", "given(", "assertEquals", "assertTrue")
+            )
+            if _added_lines and _has_new_assertions:
+                test_files_added.append(basename)
+            elif _removed_lines and not _added_lines:
+                # Only deletions — tests were removed, not updated
+                test_files_degraded.append(basename)
+            elif _removed_lines and not _has_new_assertions:
+                # Lines removed but nothing meaningful added — degraded
+                test_files_degraded.append(basename)
             continue
         if any(k in fl for k in ("service", "validation", "processor", "handler", "manager")):
             class_name = basename.replace(".java", "")
@@ -595,10 +617,39 @@ def _check_service_without_test_update(
 
     for filepath, class_name in prod_services:
         class_lower = class_name.lower()
-        has_test_update = any(
-            class_lower in tf.lower() or tf.lower().startswith(class_lower[:12])
-            for tf in test_files_changed
-        )
+
+        # Check whether the corresponding test was properly updated, degraded, or absent
+        _matches_test = lambda tf: class_lower in tf.lower() or tf.lower().startswith(class_lower[:12])
+        _test_properly_updated = any(_matches_test(tf) for tf in test_files_added)
+        _test_degraded         = any(_matches_test(tf) for tf in test_files_degraded)
+        has_test_update        = any(_matches_test(tf) for tf in test_files_changed)
+
+        if _test_properly_updated and not _test_degraded:
+            # Test was actively improved — skip
+            continue
+
+        if _test_degraded:
+            # Tests were deleted/removed from the test file. This is HIGH risk:
+            # someone may have removed assertions that would catch the regression.
+            # The remaining tests can still fail against the changed service.
+            _is_config_class = any(k in class_lower for k in ("config", "orchestration", "properties", "settings", "factory"))
+            sev, conf = ("MEDIUM", 55) if _is_config_class else ("HIGH", 80)
+            findings.append(BuildFinding(
+                check="test_deleted_on_service_change",
+                step="build",
+                severity=sev,
+                confidence=conf,
+                title=f"{class_name} changed — matching tests were DELETED (not updated)",
+                detail=filepath,
+                evidence=(
+                    f"{class_name} had logic changes AND its test file had assertions removed. "
+                    f"Deleted tests reduce coverage AND may hide regressions. "
+                    f"Remaining tests can still fail at runtime against the changed service logic. "
+                    f"Maven Surefire will fail if any remaining assertion no longer holds."
+                ),
+            ))
+            continue
+
         if not has_test_update:
             # Config/orchestration classes rarely have unit tests and rarely break build
             # when changed — they're Spring @Configuration/@Component beans, not service logic.
@@ -1864,23 +1915,44 @@ def _check_build_antipatterns(diff_text: str, changed_files: List[str], repo_dir
                     _version_changed.append((filepath, ver_val))
                 if not ver_val.startswith("${"):
                     _non_property_version.append((filepath, ver_val))
-    # If both a numeric version bump AND a hard-coded (non-property) version exist across different files
+    # Cross-module version skew: a version was bumped in one pom.xml while a DIFFERENT
+    # pom.xml still hard-codes the same artifact at a different version.
+    #
+    # Previous check was too broad: it fired whenever any numeric version + any
+    # hardcoded version existed across ANY pom.xml files, including uber-jar and
+    # plugin versions which are ALWAYS hardcoded in AEM. This caused false positives
+    # on every Java 21 migration (which touches multiple pom.xml files).
+    #
+    # Tightened rule: only flag when the SAME artifact version string appears at
+    # different values in different pom.xml files in the diff. Also:
+    # - severity capped at MEDIUM (not HIGH) — speculative, cannot prove a failure
+    # - confidence stored as integer 0-100 (was 0.88 decimal — displayed as "0.88%")
     if _version_changed and _non_property_version:
         files_bumped = {fp for fp, _ in _version_changed}
         files_hardcoded = {fp for fp, _ in _non_property_version}
-        if files_bumped != files_hardcoded or len(files_bumped) > 1:
+        # Only flag genuine cross-module skew: a version changed in one file while
+        # a DIFFERENT file still has a hardcoded version of the SAME artifact.
+        # Exclude: uber-jar, plugin, BOM, and parent versions — these are always hardcoded.
+        _excluded_artifacts = ("uber-jar", "aem-sdk-api", "filevault", "htl", "bnd",
+                               "maven-", "sling-", "jackrabbit", "parent", "bom")
+        _skewed_versions = [
+            (fp, v) for fp, v in _non_property_version
+            if not any(ex in v.lower() or ex in fp.lower() for ex in _excluded_artifacts)
+            and any(fp2 != fp for fp2, v2 in _version_changed if v2 != v)
+        ]
+        if _skewed_versions and files_bumped != files_hardcoded:
             findings.append(BuildFinding(
                 check="build_antipatterns",
                 step="maven-build",
-                severity="HIGH",
-                confidence=0.88,
+                severity="MEDIUM",   # was HIGH — speculative, cannot prove failure
+                confidence=50,       # was 0.88 (decimal bug: displayed as "0.88%") → 50 integer
                 title="Cross-module version skew detected in pom.xml changes",
                 detail=(
                     "A <version> was changed in one pom.xml while another module references a "
                     "hard-coded version string not using ${project.version}. The version bump "
                     "may not have been propagated to all child modules, causing reactor build failures."
                 ),
-                evidence=[f"{fp}: {v}" for fp, v in (_version_changed + _non_property_version)[:6]],
+                evidence=[f"{fp}: {v}" for fp, v in (_skewed_versions + list(_version_changed))[:6]],
             ))
 
     # ── Check 5: Dispatcher .any file invalid rule syntax ───────────────────
@@ -2256,19 +2328,42 @@ def _check_uncaught_sling_exceptions(
                             if not call_in_method:
                                 continue
 
-                            # Check throws declaration on this method
+                            # Check throws declaration on this method.
+                            # IMPORTANT: `throws Exception` or `throws Throwable` covers
+                            # ANY checked exception including LoginException.
+                            # Only check for exact match AND parent types.
+                            _parent_exc_types = {"Exception", "Throwable", "java.lang.Exception", "java.lang.Throwable"}
                             throws_it = any(
                                 exception in str(t) or full_exc in str(t)
+                                or any(p in str(t) for p in _parent_exc_types)
                                 for t in (node.throws or [])
                             )
                             if throws_it:
                                 break  # properly declared — not a problem
 
-                            # Check for try-catch enclosing the call
-                            has_try = any(
-                                isinstance(stmt, _jl.tree.TryStatement)
-                                for stmt in (node.body or [])
-                            ) if node.body else False
+                            # Check for try-catch enclosing the call — recursive search.
+                            # Shallow check (direct children only) misses nested try blocks,
+                            # e.g. call inside `if (x) { try { ... } catch (LoginException e) {} }`.
+                            def _has_try_recursive(stmts):
+                                if not stmts:
+                                    return False
+                                for stmt in stmts:
+                                    if isinstance(stmt, _jl.tree.TryStatement):
+                                        return True
+                                    # Recurse into block-like containers
+                                    for attr in ("body", "then_statement", "else_statement", "statements"):
+                                        child = getattr(stmt, attr, None)
+                                        if isinstance(child, list) and _has_try_recursive(child):
+                                            return True
+                                        if hasattr(child, "__iter__") and not isinstance(child, str):
+                                            try:
+                                                if _has_try_recursive(list(child)):
+                                                    return True
+                                            except Exception:
+                                                pass
+                                return False
+
+                            has_try = _has_try_recursive(node.body or [])
 
                             if not has_try:
                                 confirmed = True
@@ -2747,7 +2842,22 @@ def predict_build_failures(
     # Check 0 (pre): Missing symbol references — cannot find symbol errors
     # Runs before everything including subtree short-circuit since subtree imports
     # can bring in code that references non-existent classes/methods (new or deleted)
-    _missing_sym = _check_missing_symbol_references(diff_text, changed_files, repo_dir)
+    #
+    # SKIP when the diff is clearly truncated (commit has too many files to scan reliably).
+    # Truncation means we see the import but not the class definition that comes later
+    # in the same diff — producing false "cannot find symbol" findings.
+    # Rule: skip when files_changed > 500 OR diff is at the MAX_DIFF_BYTES ceiling.
+    # These are always bulk imports / initial commits / large restructurings where
+    # the full picture is invisible.
+    _diff_is_truncated = (
+        len(changed_files) > 500
+        or len(diff_text.encode()) >= MAX_DIFF_BYTES - 1024  # within 1KB of the cap
+        or "... [diff truncated]" in diff_text
+    )
+    if _diff_is_truncated:
+        _missing_sym = []
+    else:
+        _missing_sym = _check_missing_symbol_references(diff_text, changed_files, repo_dir)
     if _missing_sym:
         # If missing symbols found in a subtree import, override the LOW verdict
         _top_ms = _missing_sym[0]
@@ -2801,14 +2911,27 @@ def predict_build_failures(
     # faithfully reproduces that bug into this repo.
     if signals.is_subtree_import:
         _exc_findings = _check_uncaught_sling_exceptions(diff_text, changed_files, repo_dir)
-        if _exc_findings:
-            # Subtree import contains compilation errors — not safe
-            _top = _exc_findings[0]
+        # For subtree imports: if the source repo was building fine, an uncaught
+        # LoginException finding is more likely a false positive (the source repo
+        # wouldn't build if it had a real uncaught checked exception).
+        # Only treat as a build blocker if confidence is VERY HIGH (AST-confirmed
+        # AND the finding is not the LoginException/Sling runtime category).
+        # LoginException from getResourceResolver() is a RUNTIME risk (service fails
+        # at runtime), not a COMPILE error — Java doesn't require catching it if the
+        # method declares a broad throws clause like `throws Exception`.
+        # Lower severity for subtree: flag as MEDIUM advisory, not HOLD.
+        _exc_high = [f for f in _exc_findings if f.severity in ("HIGH", "CERTAIN")
+                     and f.confidence >= 90  # only if near-certain
+                     and "LoginException" not in f.title  # LoginException = runtime, not compile
+                     and "uncaught" not in f.title.lower()]
+        if _exc_high:
+            # Confirmed non-LoginException compile error in subtree — still a blocker
+            _top = _exc_high[0]
             return BuildPrediction(
                 predicted_step = "build",
                 predicted_risk = "High",
                 confidence     = _top.confidence,
-                findings       = _exc_findings,
+                findings       = _exc_high,
                 is_structural  = True,
                 override_llm   = True,
                 summary        = (
@@ -2816,6 +2939,13 @@ def predict_build_failures(
                     f"Fix the error in the source repository before re-importing."
                 ),
             )
+        if _exc_findings:
+            # LoginException / uncaught runtime exception in subtree: MEDIUM advisory.
+            # The source repo was building — this is likely a runtime risk, not compile.
+            # Don't block promotion; warn the developer to verify at runtime.
+            for _f in _exc_findings:
+                _f.severity = "MEDIUM"
+                _f.confidence = min(_f.confidence, 55)
         # No compilation errors found — safe subtree import
         subtree_finding = BuildFinding(
             check="subtree_import", step="build", severity="LOW", confidence=88,
@@ -2829,7 +2959,9 @@ def predict_build_failures(
             confidence     = 88,
             findings       = [subtree_finding],
             is_structural  = True,
-            override_llm   = True,
+            override_llm   = False,  # LLM runs — it adds historical ChromaDB context and
+                                     # integration risk that structural can't see. The [LOW]
+                                     # finding anchors it; LLM can upgrade but rarely does for subtrees.
             summary        = "Git subtree import — code pre-validated in source repo. Build risk is structurally low.",
         )
 
@@ -2983,22 +3115,133 @@ def predict_build_failures(
             for sm_diff in submodule_diffs.values()
         )
 
+    # Always extract bumped submodule names from parent diff — even when submodule_diffs is empty.
+    # This lets us detect submodules that were bumped but whose diff could NOT be fetched.
+    _sm_all_bumped: Dict[str, str] = {}  # name → new SHA, for every bumped submodule
+    for _m in re.finditer(
+        r"diff --git a/(\S+) b/\S+.*?\+Subproject commit ([0-9a-f]{7,40})",
+        diff_text, re.DOTALL
+    ):
+        _path, _sha = _m.group(1), _m.group(2)
+        _sm_key = _path.strip("/").split("/")[-1]
+        _sm_all_bumped[_sm_key] = _sha
+
+    # Emit MEDIUM finding for every bumped submodule whose diff was NOT fetched.
+    # Previously: unfetched → invisible → build_risk_override=LOW → false negative.
+    # Now: unfetched → explicit MEDIUM finding → compressor sees it → MEDIUM override.
+    _fetched_names = set(submodule_diffs.keys()) if submodule_diffs else set()
+    for _unfetched_name, _unfetched_sha in _sm_all_bumped.items():
+        # Fuzzy match: submodule name in repo_config may not exactly match the path
+        _already_fetched = any(
+            _unfetched_name.lower() in fn.lower() or fn.lower() in _unfetched_name.lower()
+            for fn in _fetched_names
+        )
+        if not _already_fetched:
+            all_findings.append(BuildFinding(
+                check="submodule_diff_unavailable",
+                step="build",
+                severity="MEDIUM",
+                confidence=55,
+                title=f"{_unfetched_name} was bumped — diff not available, build risk unknown",
+                detail=f"SHA: {_unfetched_sha[:12]}",
+                evidence=(
+                    f"Submodule '{_unfetched_name}' pointer was updated to {_unfetched_sha[:12]} "
+                    f"but the actual code diff could not be fetched (not in repo_config, no credentials, "
+                    f"or fetch failed). Build risk is UNKNOWN — the submodule may contain service "
+                    f"changes that break surefire tests. Cannot verify test existence."
+                ),
+            ))
+
     if submodule_diffs and (not _is_submodule_only_parent or _has_substantial_submodule):
+        # Extract new submodule SHAs from parent diff: "+Subproject commit <sha>"
+        _sm_new_shas: Dict[str, str] = _sm_all_bumped.copy()
+
         for _sm_name, _sm_raw_diff in submodule_diffs.items():
-            if _sm_raw_diff and _sm_raw_diff.strip():
-                _sm_findings = _check_service_without_test_update(_sm_raw_diff, commit_title)
-                for _smf in _sm_findings:
-                    _smf = BuildFinding(
-                        check=_smf.check, step=_smf.step,
-                        severity=_smf.severity, confidence=min(_smf.confidence, 55),
-                        title=_smf.title,
-                        detail=_smf.detail,
-                        evidence=f"[submodule: {_sm_name}] {_smf.evidence}",
-                    )
-                    all_findings.append(_smf)
+            if not _sm_raw_diff or not _sm_raw_diff.strip():
+                continue
+
+            _sm_findings = _check_service_without_test_update(_sm_raw_diff, commit_title)
+            if not _sm_findings:
                 all_findings.extend(_check_test_runtime_failures(
                     _sm_raw_diff, [f for f in changed_files if _sm_name in f]
                 ))
+                continue
+
+            # ── Verify test existence in the submodule at the new SHA ────────────
+            # The diff only shows what CHANGED — but the test may exist unchanged.
+            # Use git ls-tree to list ALL files in the submodule and check for *Test.java.
+            # If the test file EXISTS → the submodule has test coverage, just not modified.
+            #   → suppress the finding (not a real missing test)
+            # If the test file is ABSENT → genuine missing test → flag HIGH
+            # If we can't fetch the file list → fall back to MEDIUM with advisory wording.
+            _sm_sha = _sm_new_shas.get(_sm_name, "")
+            _sm_all_files: List[str] = []
+            if _sm_sha and repo_dir:
+                try:
+                    from connectors.git_connector import list_submodule_files
+                    # Find remote URL for this submodule from repo_config
+                    _sm_url = ""
+                    try:
+                        from connectors.submodule_connector import load_repo_config as _lrc
+                        _rc = _lrc()
+                        _customer = os.getenv("CM_CUSTOMER_NAME", "")
+                        for _cfg in _rc.values():
+                            for _sm_cfg in _cfg.get("submodules", []):
+                                if _sm_cfg.get("name", "") == _sm_name:
+                                    _sm_url = _sm_cfg.get("url", "")
+                    except Exception:
+                        pass
+                    _sm_all_files = list_submodule_files(
+                        _sm_name, _sm_sha, directory="",
+                        remote_url=_sm_url, pattern="*.java",
+                        parent_repo_dir=repo_dir,
+                    )
+                except Exception:
+                    pass
+
+            for _smf in _sm_findings:
+                # Extract class name from the finding to look up its test
+                _class_hint = _smf.detail.split("/")[-1].replace(".java", "") if _smf.detail else ""
+                _test_name  = f"{_class_hint}Test.java"
+
+                if _sm_all_files:
+                    # We have the full file list — check definitively
+                    _test_exists = any(
+                        f.endswith(_test_name) or
+                        (_class_hint and _class_hint.lower() in f.lower() and "test" in f.lower())
+                        for f in _sm_all_files
+                    )
+                    if _test_exists:
+                        # Test file exists in the submodule — it just wasn't modified
+                        # in this diff. The submodule's own CI ran and passed. Suppress.
+                        print(f"  [predictor] {_test_name} EXISTS in {_sm_name}@{_sm_sha[:8]} — suppressing false positive")
+                        continue
+                    # Test genuinely absent → HIGH finding is correct
+                    _sm_sev  = _smf.severity
+                    _sm_conf = _smf.confidence
+                    _sm_evidence = (
+                        f"[submodule: {_sm_name}] CONFIRMED: {_test_name} does not exist "
+                        f"in submodule at {_sm_sha[:8]}. {_smf.evidence}"
+                    )
+                else:
+                    # Could not fetch file list — advisory MEDIUM only
+                    _sm_sev  = "MEDIUM" if _smf.severity in ("HIGH", "CERTAIN") else _smf.severity
+                    _sm_conf = min(_smf.confidence, 50)
+                    _sm_evidence = (
+                        f"[submodule: {_sm_name}] Could not verify test existence "
+                        f"(submodule files unavailable). Advisory: {_smf.evidence}"
+                    )
+
+                all_findings.append(BuildFinding(
+                    check=_smf.check, step=_smf.step,
+                    severity=_sm_sev, confidence=_sm_conf,
+                    title=_smf.title, detail=_smf.detail,
+                    evidence=_sm_evidence,
+                ))
+
+            all_findings.extend(_check_test_runtime_failures(
+                _sm_raw_diff, [f for f in changed_files if _sm_name in f]
+            ))
 
     # Check 12: Cloud Manager Java version change
     all_findings.extend(_check_cloudmanager_java_version(changed_files, diff_text, repo_dir))
@@ -3041,6 +3284,30 @@ def predict_build_failures(
             _seen_finding_keys.add(_fkey)
             _deduped_findings.append(_f)
     all_findings = _deduped_findings
+
+    # ── Truncated-diff severity cap ──────────────────────────────────────────────
+    # When the diff is truncated (>500 files or hitting MAX_DIFF_BYTES ceiling),
+    # structural checks that read diff content are unreliable — they see fragments,
+    # not the full picture. Cap ALL findings at MEDIUM:
+    #   - File-name detection (dispatcher changed, java-version changed) stays valid
+    #   - But severity can't be HIGH because we couldn't read the full diff context
+    #     (e.g. toolchain config may be defined later in the 93MB we didn't read)
+    # This prevents "DO NOT PROMOTE" from a commit where half the codebase was added.
+    if _diff_is_truncated:
+        _capped_findings = []
+        for _f in all_findings:
+            if _f.severity in ("HIGH", "CERTAIN"):
+                _capped_findings.append(BuildFinding(
+                    check=_f.check, step=_f.step,
+                    severity="MEDIUM",
+                    confidence=min(_f.confidence, 55),
+                    title=_f.title,
+                    detail=_f.detail,
+                    evidence=_f.evidence,
+                ))
+            else:
+                _capped_findings.append(_f)
+        all_findings = _capped_findings
 
     # Aggregate into overall prediction
     if not all_findings:

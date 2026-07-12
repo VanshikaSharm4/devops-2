@@ -60,8 +60,12 @@ class TenantContext:
             os.environ["PIPELINE_ID_PROD"] = self.pipeline_prod
         if self.pipeline_dev:
             os.environ["PIPELINE_ID_DEV"]  = self.pipeline_dev
+        if self.git_url:
+            os.environ["CM_GIT_REPO_URL"]  = self.git_url   # ← was missing: caused wrong-repo fetches
         if self.git_local_dir:
             os.environ["GIT_LOCAL_DIR"]    = self.git_local_dir
+        if self.git_branch:
+            os.environ["GIT_BRANCH"]       = self.git_branch
         if self.git_username:
             os.environ["CM_GIT_USERNAME"]  = self.git_username
         if self.git_password:

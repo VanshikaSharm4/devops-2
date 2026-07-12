@@ -20,8 +20,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-REPO_CONFIG_PATH = Path(os.getenv("REPO_CONFIG_PATH", "data/repo_config.json"))
+from analysis.paths import repo_config_path as _repo_config_path, secrets_path as _secrets_path
+REPO_CONFIG_PATH = _repo_config_path()
 MAX_SUBMODULE_DIFF_BYTES = 200_000   # 200KB cap per submodule diff
+
+# Background refresh: keep submodule bare repos current so SHA lookups succeed.
+# Adobe git server doesn't support arbitrary SHA fetches — you must fetch by branch.
+# Without periodic refreshes, bare repos go stale and every new SHA lookup misses.
+_SM_REFRESH_TTL_MIN  = int(os.getenv("SUBMODULE_REFRESH_TTL_MIN", "60"))  # refresh every 60 min
+_sm_last_refresh: Dict[str, float] = {}  # {local_dir: timestamp}
 
 
 # ── Config loading ─────────────────────────────────────────────────────────────
@@ -109,24 +116,156 @@ def _ensure_cloned(url: str, local_dir: str, username: str, password: str) -> bo
     return True
 
 
-def _fetch_sha(local_dir: str, sha: str, url: str, username: str, password: str) -> bool:
-    """Ensure a specific SHA is available locally. Fails fast to avoid blocking analysis."""
+def refresh_all_submodules(customer_name: str, force: bool = False) -> Dict[str, bool]:
+    """
+    Fetch the default branch for every configured submodule for a customer.
+    Run this periodically (background thread) so bare repos stay current.
+
+    Returns {submodule_name: success}.
+    This is the correct way to keep submodule repos fresh — NOT SHA-targeted fetches,
+    which Adobe's git server rejects. Fetch by branch name, let the objects accumulate.
+    """
+    import time
+    config = get_customer_config(customer_name)
+    if not config:
+        return {}
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+    username = config.get("git_username", "") or os.getenv("CM_GIT_USERNAME", "")
+    password = ""
+    try:
+        _s = _secrets_path()
+        if _s.exists():
+            password = json.loads(_s.read_text()).get(customer_name, {}).get("git_password", "")
+    except Exception:
+        pass
+    if not password:
+        password = os.getenv("CM_GIT_PASSWORD", "")
+    if not username or not password:
+        return {}
+
+    results: Dict[str, bool] = {}
+    _now = time.time()
+
+    for sm in config.get("submodules", []):
+        sm_name  = sm["name"]
+        sm_url   = sm["url"]
+        sm_local = sm["local_dir"]
+        sm_branch = sm.get("branch", "master")
+
+        # TTL: skip if refreshed recently (unless forced)
+        _last = _sm_last_refresh.get(sm_local, 0.0)
+        if not force and (_now - _last) / 60 < _SM_REFRESH_TTL_MIN:
+            results[sm_name] = True  # assumed still fresh
+            continue
+
+        # Ensure bare clone exists
+        ok = _ensure_cloned(sm_url, sm_local, username, password)
+        if not ok:
+            results[sm_name] = False
+            continue
+
+        # Fetch branch by name — what Adobe's server actually supports
+        auth_url = _auth_url(sm_url, username, password)
+        _env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+        try:
+            r = subprocess.run(
+                ["git", "fetch", auth_url, f"+refs/heads/{sm_branch}:refs/heads/{sm_branch}"],
+                cwd=sm_local, capture_output=True, text=True, timeout=25, env=_env,
+            )
+            success = r.returncode == 0
+            if success:
+                _sm_last_refresh[sm_local] = _now
+                print(f"  [submodule] {sm_name}: refreshed branch '{sm_branch}'")
+            else:
+                print(f"  [submodule] {sm_name}: fetch failed — {r.stderr[:100]}")
+            results[sm_name] = success
+        except Exception as e:
+            print(f"  [submodule] {sm_name}: fetch error — {e}")
+            results[sm_name] = False
+
+    return results
+
+
+def refresh_all_submodules_background(customer_name: str) -> None:
+    """Launch refresh_all_submodules in a daemon thread (non-blocking)."""
+    import threading
+    t = threading.Thread(
+        target=refresh_all_submodules,
+        args=(customer_name,),
+        daemon=True,
+        name=f"sm-refresh-{customer_name}",
+    )
+    t.start()
+
+
+def _fetch_sha(local_dir: str, sha: str, url: str, username: str, password: str,
+               branch: str = "") -> bool:
+    """
+    Ensure a specific SHA is available locally.
+
+    Adobe Cloud Manager's git server (Bitbucket-based) does NOT support fetching
+    arbitrary SHAs via `git fetch <url> <sha>` — the server only advertises named
+    refs (branches/tags). A targeted SHA fetch will silently fail or be rejected.
+
+    Correct strategy:
+    1. Check if SHA already present (fast path, ~3ms)
+    2. Fetch the branch that likely contains the SHA (using known branch or common defaults)
+    3. Fall back to fetching all refs if branch fetch didn't bring the SHA
+    """
     try:
         _git(local_dir, "cat-file", "-t", sha, timeout=3)
         return True  # already have it — fast path
     except RuntimeError:
         pass
-    # Not cached locally — try a quick targeted fetch
+
     auth_url = _auth_url(url, username, password)
-    try:
-        _git(local_dir, "fetch", "--depth=1", auth_url, sha, timeout=15)  # 15s max, not 60
-        return True
-    except RuntimeError:
+    _env = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", **__import__("os").environ}
+
+    # Strategy 1: fetch the configured/common branch by name (Adobe supports this)
+    # This is what Adobe git server actually supports — ref-based, not SHA-based.
+    _branches_to_try = []
+    if branch:
+        _branches_to_try.append(branch)
+    # Common AEM submodule branch patterns
+    _branches_to_try += ["master", "main", "develop", "release"]
+
+    for _branch in _branches_to_try:
         try:
-            _git(local_dir, "fetch", auth_url, timeout=60)
-            return True
-        except RuntimeError:
-            return False
+            result = __import__("subprocess").run(
+                ["git", "fetch", "--depth=50", auth_url, _branch],
+                cwd=local_dir, capture_output=True, text=True, timeout=20, env=_env,
+            )
+            if result.returncode == 0:
+                try:
+                    _git(local_dir, "cat-file", "-t", sha, timeout=3)
+                    return True  # SHA is now available
+                except RuntimeError:
+                    continue  # wrong branch, try next
+        except Exception:
+            continue
+
+    # Strategy 2: full fetch of all refs — slower but finds SHAs on any branch
+    try:
+        result = __import__("subprocess").run(
+            ["git", "fetch", auth_url, "+refs/heads/*:refs/remotes/origin/*"],
+            cwd=local_dir, capture_output=True, text=True, timeout=30, env=_env,
+        )
+        if result.returncode == 0:
+            try:
+                _git(local_dir, "cat-file", "-t", sha, timeout=3)
+                return True
+            except RuntimeError:
+                pass
+    except Exception:
+        pass
+
+    return False
 
 
 # ── Diff extraction ────────────────────────────────────────────────────────────
@@ -200,9 +339,9 @@ def get_submodule_diffs(
     # 2. .secrets.json file
     if not password:
         try:
-            _secrets_path = Path("data/.secrets.json")
-            if _secrets_path.exists():
-                _secrets = json.loads(_secrets_path.read_text(encoding="utf-8"))
+            _sp = _secrets_path()
+            if _sp.exists():
+                _secrets = json.loads(_sp.read_text(encoding="utf-8"))
                 password = _secrets.get(customer_name, {}).get("git_password", "")
         except Exception:
             pass
@@ -247,7 +386,7 @@ def get_submodule_diffs(
         sm_name, old_sha, new_sha, sm_url, sm_local = args
         auth_url = _auth_url(sm_url, username, password)
 
-        # ── Strategy 1: use existing local clone (fastest, no network) ───────
+        # ── Strategy 1: use existing local clone (no network if SHAs present) ─
         # Only attempt if the directory is already a valid git repo — don't try
         # to clone (60s timeout) when we have a faster fallback available.
         _sm_path = Path(sm_local)
@@ -261,13 +400,13 @@ def get_submodule_diffs(
                     diff_trimmed = diff_out[:MAX_SUBMODULE_DIFF_BYTES]
                     if len(diff_out.encode()) > MAX_SUBMODULE_DIFF_BYTES:
                         diff_trimmed += "\n\n... [submodule diff truncated]"
-                    print(f"  [submodule] {sm_name}: {diff_out.count(chr(10))} lines")
+                    print(f"  [submodule] {sm_name}: {diff_out.count(chr(10))} lines (via local clone)")
                     return sm_name, diff_trimmed
             except Exception:
                 pass
 
         # ── Strategy 2: fetch objects into parent repo (no clone, minimal disk) ─
-        # If the submodule isn't cloned locally, fetch just the two SHAs needed
+        # If the submodule is not cloned locally, fetch just the two SHAs needed
         # into the parent repo's object store. Uses `git fetch --depth=1` directly.
         # Zero disk overhead — objects stored in parent's .git/objects/.
         if _parent_repo and os.path.isdir(os.path.join(_parent_repo, ".git")):
@@ -298,7 +437,7 @@ def get_submodule_diffs(
             except Exception as e:
                 print(f"  [submodule] {sm_name} parent-fetch failed: {e}")
 
-        print(f"  [submodule] {sm_name}: unavailable (no clone, no parent fetch)")
+        print(f"  [submodule] {sm_name}: unavailable (API, clone, and parent fetch all failed)")
         return sm_name, None
 
     # Fetch all submodule diffs in parallel — major speedup for 8+ submodules

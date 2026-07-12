@@ -27,8 +27,9 @@ from analysis.risk_analyzer import run_pre_deploy_risk
 def _load_customer_config() -> dict:
     """Load customer_config.json and merge secrets for git credentials."""
     import json
-    cfg_path = os.path.join(PROJECT_ROOT, "data/customer_config.json")
-    sec_path = os.path.join(PROJECT_ROOT, "data/.secrets.json")
+    from analysis.paths import customer_config_path, secrets_path
+    cfg_path = str(customer_config_path())
+    sec_path = str(secrets_path())
     try:
         with open(cfg_path) as f:
             cfg = json.load(f)
@@ -56,7 +57,7 @@ def _cust(short_name: str, program_id: str, cache_name: str, git_dir: str, branc
     return {
         "name": short_name,
         "program_id": program_id,
-        "cache_path": os.path.join(PROJECT_ROOT, f"data/cache/{cache_name}"),
+        "cache_path": str(__import__('analysis.paths', fromlist=['cache_dir']).cache_dir() / cache_name),
         "git_dir": git_dir,
         "branch": branch,
         "git_url":      entry.get("git_url", ""),

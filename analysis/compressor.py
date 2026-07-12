@@ -186,16 +186,56 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
     if _is_submodule_pointer_only:
         commit_profile_dict["is_submodule_pointer_only"] = True
         # Check if structural_findings already found service/test issues in submodule scan
+        _structural_findings = bundle_dict.get("structural_findings") or []
         _has_service_findings = any(
             sf.get("check", "") in (
                 "service_without_test_update", "autowired_missing_test_mock",
                 "injectmocks_without_mock", "core_java_without_test_update",
+                "test_deleted_on_service_change",
+                "submodule_diff_unavailable",      # bumped but diff not fetched
             )
-            for sf in (bundle_dict.get("structural_findings") or [])
+            for sf in _structural_findings
         )
-        if _has_service_findings:
-            # Structural scan found service changes → build risk is MEDIUM, not LOW
-            # The submodule has real code changes that may fail surefire tests
+        _has_deleted_test_findings = any(
+            sf.get("check", "") == "test_deleted_on_service_change"
+            for sf in _structural_findings
+        )
+        _has_unfetched_submodule = any(
+            sf.get("check", "") == "submodule_diff_unavailable"
+            for sf in _structural_findings
+        )
+        _unfetched_names = [
+            sf.get("title", "").split(" was bumped")[0]
+            for sf in _structural_findings
+            if sf.get("check", "") == "submodule_diff_unavailable"
+        ]
+
+        if _has_deleted_test_findings:
+            # Tests were deleted alongside service changes — HIGH build risk.
+            # Remaining tests can still fail against the changed service logic.
+            # This is NOT "reduced coverage" — it is a surefire failure pattern.
+            commit_profile_dict["build_risk_override"] = (
+                "HIGH — submodule service code changed AND matching test assertions were DELETED. "
+                "This is the surefire failure pattern: tests that remain will run against changed "
+                "service logic and may fail with NPE, assertion error, or Mockito verification failure. "
+                "Deleting tests does NOT prevent build failure — it removes tests that WOULD catch the regression. "
+                "Set build to High. Do NOT treat deleted tests as 'reduced coverage only'."
+            )
+        elif _has_unfetched_submodule:
+            # One or more submodules were bumped but their diffs could not be fetched.
+            # Build risk is UNKNOWN — cannot verify whether tests pass or fail.
+            # Do NOT default to LOW when you have no visibility into what changed.
+            _names_str = ", ".join(_unfetched_names) if _unfetched_names else "one or more submodules"
+            commit_profile_dict["build_risk_override"] = (
+                f"MEDIUM — {_names_str} pointer was updated but the actual code diff could not be "
+                f"fetched (submodule not in repo_config, credentials unavailable, or fetch failed). "
+                f"Build risk is UNKNOWN: the submodule may contain service changes that break "
+                f"surefire tests, but Argus cannot verify this without the diff. "
+                f"Treat as MEDIUM — do not assume LOW just because the parent repo has no app code. "
+                f"The real code lives in the submodule and is invisible here."
+            )
+        elif _has_service_findings:
+            # Structural scan found service changes without test updates → build risk MEDIUM
             commit_profile_dict["build_risk_override"] = (
                 "MEDIUM — parent bumps submodule pointer, but structural analysis found "
                 "service implementations changed without test updates inside the submodule. "
@@ -207,7 +247,6 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
             commit_profile_dict["build_risk_override"] = (
                 "LOW — parent repo only bumps submodule pointer SHAs and pom.xml. "
                 "No app code compiled from parent. Build risk is LOW. "
-                "Key point: deleted test files do NOT cause build failures — they only reduce test coverage. "
                 "Real risk is at DEPLOY (bundle ordering) not BUILD. "
                 "Do NOT rate build step as High or Medium based on submodule content alone."
             )

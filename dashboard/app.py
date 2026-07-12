@@ -5,6 +5,7 @@ Program 19905 · IDFC First Bank Limited
 import json
 import os
 import sys
+import html as _html
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,9 +19,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+_TOPBAR_HEIGHT_PX = 60
+_TOPBAR_HEIGHT_CSS = f"{_TOPBAR_HEIGHT_PX}px"
+
 # ── Customer registry — loaded from data/customer_config.json ─────────────────
-_CONFIG_PATH  = Path("data/customer_config.json")
-_SECRETS_PATH = Path("data/.secrets.json")
+from analysis.paths import customer_config_path as _customer_config_path, secrets_path as _secrets_path_fn, repo_config_path as _repo_config_path, cache_dir as _cache_dir, splunk_exports_dir as _splunk_exports_dir
+_CONFIG_PATH  = _customer_config_path()
+_SECRETS_PATH = _secrets_path_fn()
 
 
 def _load_customers() -> dict:
@@ -48,18 +53,44 @@ def _load_customers() -> dict:
             pass
 
     for name, c in cfg.items():
-        pwd = secrets.get(name, {}).get("git_password", "") or os.getenv(
-            f"{c.get('short','').upper()}_CM_GIT_PASSWORD", ""
+        _short_upper = c.get("short", "").upper()
+        # Try multiple env var patterns to tolerate naming variations:
+        # 1. .secrets.json  2. MAS_CM_GIT_PASSWORD  3. MALAYSIA_CM_GIT_PASSWORD
+        # 4. Any key in os.environ containing the customer name + CM_GIT_PASSWORD
+        _name_upper = name.upper().replace(" ", "_").replace("-", "_")
+        pwd = (
+            secrets.get(name, {}).get("git_password", "")
+            or os.getenv(f"{_short_upper}_CM_GIT_PASSWORD", "")
+            or os.getenv(f"{_name_upper}_CM_GIT_PASSWORD", "")
+            or next(
+                (v for k, v in os.environ.items()
+                 if "CM_GIT_PASSWORD" in k and any(
+                     part in k.upper() for part in _name_upper.split("_") if len(part) > 3
+                 )),
+                ""
+            )
+        )
+        # Allow env vars to override customer_config.json values.
+        # Pattern: {NAME_UPPER}_GIT_URL, {NAME_UPPER}_GIT_LOCAL_DIR, {SHORT}_GIT_URL etc.
+        _git_url = (
+            os.getenv(f"{_name_upper}_GIT_URL")
+            or os.getenv(f"{_short_upper}_GIT_URL")
+            or c.get("git_url", "")
+        )
+        _git_local_dir = (
+            os.getenv(f"{_name_upper}_GIT_LOCAL_DIR")
+            or os.getenv(f"{_short_upper}_GIT_LOCAL_DIR")
+            or c.get("git_local_dir", "")
         )
         customers[name] = {
-            "program_id":    c.get("program_id") or os.getenv(f"PROGRAM_ID_{c.get('short','').upper()}", ""),
+            "program_id":    c.get("program_id") or os.getenv(f"PROGRAM_ID_{_short_upper}", ""),
             "pipeline_prod": c.get("pipeline_prod", ""),
             "pipeline_dev":  c.get("pipeline_dev", ""),
             "org_id":        c.get("org_id", ""),
             "tenant_id":     c.get("tenant_id", ""),
             "short":         c.get("short", name[:4].upper()),
-            "git_url":       c.get("git_url", ""),
-            "git_local_dir": c.get("git_local_dir", ""),
+            "git_url":       _git_url,
+            "git_local_dir": _git_local_dir,
             "git_branch":    c.get("git_branch", "master"),
             "git_username":  c.get("git_username", ""),
             "git_password":  pwd,
@@ -116,9 +147,11 @@ _CUSTOMERS = _load_customers()
 # Persist selected customer across reruns
 # Restore selected customer from URL query params on refresh
 # This keeps the customer selection when the page is reloaded
-if "selected_customer" not in st.session_state:
-    _qp_customer = st.query_params.get("customer", "")
-    st.session_state["selected_customer"] = _qp_customer if _qp_customer in _CUSTOMERS else list(_CUSTOMERS.keys())[0]
+_qp_customer = st.query_params.get("customer", "")
+if _qp_customer in _CUSTOMERS:
+    st.session_state["selected_customer"] = _qp_customer
+elif "selected_customer" not in st.session_state:
+    st.session_state["selected_customer"] = list(_CUSTOMERS.keys())[0]
 
 # Build TenantContext from selected customer — do NOT write to os.environ here.
 # Writing to os.environ is process-global: 10 concurrent Streamlit sessions share
@@ -143,41 +176,41 @@ st.session_state["_tenant_ctx"] = _tenant_ctx
 # Full fix requires async workers (Phase 1) — this is the Phase 0 improvement.
 _tenant_ctx.apply_to_env()
 
-# ── Design tokens ─────────────────────────────────────────────────────────────
-T = {
-    # Sidebar — Adobe Spectrum white
-    "sidebar_bg":        "#FFFFFF",
-    "sidebar_border":    "#F0F0F0",
-    "sidebar_nav_hover": "#F5F5F5",
-    "sidebar_nav_active":"#EEF2FF",
-    "sidebar_accent":    "#1473E6",
-    "sidebar_text":      "#4B4B4B",
-    "sidebar_text_dim":  "#999999",
-    "sidebar_text_hi":   "#1A1A1A",
+# ── Theme tokens ──────────────────────────────────────────────────────────────
+# This is a Streamlit application, so Tailwind utility classes are unavailable.
+# Keep all visual values in one token map so every component follows the selected
+# theme and no page-local colour literals are needed.
+if "ui_theme" not in st.session_state:
+    st.session_state["ui_theme"] = "light"
 
-    # Content — pure white, feather-light borders
-    "bg":       "#FFFFFF",
-    "surface":  "#FFFFFF",
-    "surface2": "#FAFAFA",
-    "border":   "#EFEFEF",
-    "border2":  "#F7F7F7",
-
-    # Typography — charcoal, not harsh black
-    "text":      "#1A1A1A",
-    "text_sub":  "#4B4B4B",
-    "text_muted":"#909090",
-
-    # Semantic (kept for status/data colour coding)
-    "red":    "#E5484D",
-    "amber":  "#C98900",
-    "green":  "#2D9D5C",
-    "blue":   "#1473E6",
-    "purple": "#7C53C3",
-    "gray":   "#747474",
-
-    # Chart palette
-    "chart": ["#1473E6","#E5484D","#C98900","#2D9D5C","#7C53C3","#747474"],
+_THEMES = {
+    "light": {
+        "sidebar_bg": "#FFFFFF", "sidebar_border": "#E5E7EB",
+        "sidebar_nav_hover": "#F8FAFC", "sidebar_nav_active": "#EFF6FF",
+        "sidebar_accent": "#2563EB", "sidebar_text": "#4B5563",
+        "sidebar_text_dim": "#6B7280", "sidebar_text_hi": "#111827",
+        "bg": "#F6F8FB", "surface": "#FFFFFF", "surface2": "#F8FAFC",
+        "border": "#E5E7EB", "border2": "#F1F5F9",
+        "text": "#111827", "text_sub": "#4B5563", "text_muted": "#6B7280",
+        "red": "#B91C1C", "amber": "#C98900", "green": "#16A34A",
+        "blue": "#2563EB", "purple": "#7C3AED", "gray": "#64748B",
+        "shadow": "0 0.5rem 1.5rem rgba(15, 23, 42, 0.06)",
+    },
+    "dark": {
+        "sidebar_bg": "#0F172A", "sidebar_border": "#263244",
+        "sidebar_nav_hover": "#111827", "sidebar_nav_active": "#172554",
+        "sidebar_accent": "#60A5FA", "sidebar_text": "#CBD5E1",
+        "sidebar_text_dim": "#94A3B8", "sidebar_text_hi": "#F8FAFC",
+        "bg": "#0B1120", "surface": "#111827", "surface2": "#0B1220",
+        "border": "#263244", "border2": "#1E293B",
+        "text": "#F8FAFC", "text_sub": "#CBD5E1", "text_muted": "#94A3B8",
+        "red": "#FCA5A5", "amber": "#FCD34D", "green": "#86EFAC",
+        "blue": "#93C5FD", "purple": "#C4B5FD", "gray": "#94A3B8",
+        "shadow": "0 0.5rem 1.5rem rgba(0, 0, 0, 0.24)",
+    },
 }
+T = _THEMES[st.session_state["ui_theme"]]
+T["chart"] = [T["blue"], T["red"], T["amber"], T["green"], T["purple"], T["gray"]]
 
 st.markdown(f"""
 <style>
@@ -204,6 +237,20 @@ html, body, [class*="css"] {{
     padding: 1.25rem 2rem 1.5rem !important;
     max-width: 1440px !important;
 }}
+[data-testid="stMain"] {{
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+    margin-top: {_TOPBAR_HEIGHT_CSS} !important;
+}}
+[data-testid="stSidebar"] {{
+    position: sticky !important;
+    top: {_TOPBAR_HEIGHT_CSS} !important;
+    left: 0 !important;
+    height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+    min-height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+    max-height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+}}
 [data-testid="stMain"] [data-testid="stVerticalBlock"] {{
     gap: 0.35rem !important;
 }}
@@ -228,6 +275,7 @@ html, body, [class*="css"] {{
     transform: translateX(0) !important;
     display: flex !important;
     flex-direction: column !important;
+    align-items: stretch !important;
     visibility: visible !important;
     opacity: 1 !important;
     pointer-events: auto !important;
@@ -236,9 +284,14 @@ html, body, [class*="css"] {{
     border-left: none !important;
     border-top: none !important;
     border-bottom: none !important;
-    position: relative !important;
+    position: sticky !important;
+    top: {_TOPBAR_HEIGHT_CSS} !important;
+    height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+    min-height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
+    max-height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
     flex-shrink: 0 !important;
     overflow: hidden !important;
+    overflow-y: hidden !important;
     /* Smooth width transition — labels clip via overflow, not display:none */
     transition: min-width 0.2s ease, max-width 0.2s ease, width 0.2s ease !important;
     /* width set dynamically by fragment */
@@ -266,6 +319,14 @@ html, body, [class*="css"] {{
     box-sizing: border-box !important;
     scrollbar-gutter: auto !important;
 }}
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebar"] header {{
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}}
 
 /* Multipage nav column — hide but don't leave a click-blocking layer */
 [data-testid="stSidebarNav"] {{
@@ -283,6 +344,14 @@ html, body, [class*="css"] {{
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
+}}
+/* Keep navigation compact and aligned to the top of the sidebar. */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+    gap: 0 !important;
+}}
+[data-testid="stSidebar"] .element-container,
+[data-testid="stSidebar"] [data-testid="element-container"] {{
+    margin-bottom: 0 !important;
 }}
 /* Selectbox always fully clickable and elevated */
 [data-testid="stSidebar"] [data-testid="stSelectbox"],
@@ -305,6 +374,26 @@ html, body, [class*="css"] {{
 }}
 [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label {{
     color: inherit !important;
+    font-size: 0.98rem !important;
+    line-height: 1.3 !important;
+}}
+[data-testid="stSidebar"], [data-testid="stSidebar"] * {{
+    cursor: default !important;
+}}
+[data-testid="stSidebar"] button,
+[data-testid="stSidebar"] a,
+[data-testid="stSidebar"] [role="button"],
+[data-testid="stSidebar"] input,
+[data-testid="stSidebar"] select,
+[data-testid="stSidebar"] [data-baseweb="select"],
+[data-testid="stSidebar"] label {{
+    cursor: pointer !important;
+}}
+[data-testid="stSidebar"] > div:first-child,
+[data-testid="stSidebar"] > div:first-child > div,
+[data-testid="stSidebar"] > div:first-child > div > div {{
+    padding-top: 0 !important;
+    margin-top: 0 !important;
 }}
 [data-testid="stSidebar"] hr {{
     border-color: {T['sidebar_border']} !important;
@@ -367,10 +456,16 @@ iframe[style*="height: 0"] {{
     transition: color 0.1s, border-color 0.1s !important;
     line-height: 1.4 !important;
 }}
-[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"] {{
+[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
+[data-testid="stSidebar"] button [data-testid="stIconMaterial"],
+[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"] [data-testid="stIconMaterial"] {{
     color: currentColor !important;
     flex: 0 0 auto !important;
     margin: 0 !important;
+    font-size: 1.35rem !important;
+    width: 1.35rem !important;
+    height: 1.35rem !important;
+    line-height: 1 !important;
 }}
 [data-testid="stSidebar"] .stButton > button:hover {{
     background: transparent !important;
@@ -392,8 +487,8 @@ iframe[style*="height: 0"] {{
 [data-testid="stSidebar"] button[kind="secondary"],
 [data-testid="stSidebar"] button[kind="primary"],
 [data-testid="stSidebar"] button {{
-    height: 36px !important;
-    min-height: 36px !important;
+    height: 30px !important;
+    min-height: 30px !important;
     padding: 0 0 0 12px !important;
     text-align: left !important;
     justify-content: flex-start !important;
@@ -1142,8 +1237,8 @@ div[data-testid="stDataFrame"] [class*="gdg"] {{
     box-sizing: border-box;
 }}
 .ra-ui-card-hero .ra-ui-data .ra-ui-headline {{
-    font-size: 1.9rem;
-    line-height: 2.1rem;
+    font-size: 1.4rem;
+    line-height: 1.7rem;
 }}
 .ra-ui-card-compact {{
     padding: 0.85rem 1rem;
@@ -1335,6 +1430,347 @@ div[data-testid="stDataFrame"] [class*="gdg"] {{
     margin: 0;
 }}
 
+</style>
+""", unsafe_allow_html=True)
+
+# ── Premium workspace overrides ───────────────────────────────────────────────
+# Kept after the legacy stylesheet so the page shell, navigation, and assessment
+# workspace consistently inherit the active token map.
+st.markdown(f"""
+<style>
+:root {{
+    --app-bg: {T["bg"]};
+    --panel-bg: {T["surface"]};
+    --panel-soft: {T["surface2"]};
+    --border: {T["border"]};
+    --border-soft: {T["border2"]};
+    --text: {T["text"]};
+    --text-subtle: {T["text_sub"]};
+    --text-muted: {T["text_muted"]};
+    --sidebar-bg: {T["sidebar_bg"]};
+    --sidebar-text: {T["sidebar_text"]};
+    --sidebar-active: {T["sidebar_nav_active"]};
+    --accent: {T["sidebar_accent"]};
+    --elevation: {T["shadow"]};
+}}
+
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+.main .block-container,
+[data-testid="stMainBlockContainer"] {{
+    background: var(--app-bg) !important;
+    color: var(--text) !important;
+}}
+.block-container {{
+    max-width: 96rem !important;
+    margin-inline: auto !important;
+    padding: clamp(1rem, 2vw, 2rem) !important;
+}}
+[data-testid="stSidebar"] {{
+    background: var(--sidebar-bg) !important;
+    border-right-color: var(--border) !important;
+}}
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] button[kind="secondary"],
+[data-testid="stSidebar"] button[kind="primary"] {{
+    min-height: 2.75rem !important;
+    margin-block: 0.125rem !important;
+    padding-inline: 0.75rem !important;
+    border: 0 !important;
+    border-radius: 0.75rem !important;
+    color: var(--sidebar-text) !important;
+}}
+[data-testid="stSidebar"] button[kind="secondary"]:hover {{
+    background: {T["sidebar_nav_hover"]} !important;
+    color: var(--text) !important;
+}}
+[data-testid="stSidebar"] button[kind="primary"] {{
+    background: var(--sidebar-active) !important;
+    color: var(--accent) !important;
+    box-shadow: inset 0 0 0 0.0625rem var(--border-soft) !important;
+}}
+[data-testid="stSidebar"] button:focus-visible,
+[data-testid="stMain"] button:focus-visible {{
+    outline: 0.125rem solid var(--accent) !important;
+    outline-offset: 0.125rem !important;
+}}
+
+/* ── Adobe CM design tokens ── */
+:root {{
+    --cm-bg: #FFFFFF;
+    --cm-surface: #F5F5F5;
+    --cm-border: #E0E0E0;
+    --cm-text: #1E1E1E;
+    --cm-text-muted: #6E6E6E;
+    --cm-blue: #1473E6;
+    --cm-green: #12805C;
+    --cm-red: #D7373F;
+    --cm-amber: #E68619;
+    --cm-selected-bg: #EBF4FF;
+    --cm-selected-border: #1473E6;
+}}
+
+/* ── CM page header / breadcrumb ── */
+.cm-page-header {{
+    padding: 20px 0 16px 0;
+    border-bottom: 1px solid var(--cm-border);
+    margin-bottom: 20px;
+}}
+.cm-breadcrumb {{
+    font-size: 12px;
+    color: var(--cm-text-muted);
+    margin: 0 0 6px 0;
+    letter-spacing: 0.01em;
+    line-height: 1.4;
+}}
+.cm-page-title {{
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--cm-text);
+    margin: 0;
+    line-height: 1.3;
+}}
+
+/* ── CM section container (flat, no heavy card) ── */
+.cm-section {{
+    background: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}}
+.cm-section-title {{
+    font-size: 13px;
+    font-weight: 600;
+    color: #1E1E1E;
+    padding: 12px 16px 10px;
+    border-bottom: 1px solid #E0E0E0;
+    margin: 0;
+    background: #FAFAFA;
+}}
+.cm-section-help {{
+    font-size: 12px;
+    color: #6E6E6E;
+    padding: 8px 16px;
+    margin: 0;
+    border-bottom: 1px solid #E0E0E0;
+    line-height: 1.5;
+    background: #FAFAFA;
+}}
+
+/* ── CM status chips ── */
+.risk-status {{
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    width: fit-content;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    background: transparent;
+    border: none;
+}}
+.risk-status-finished {{ color: #12805C; }}
+.risk-status-failed,
+.risk-status-error {{ color: #D7373F; }}
+.risk-status-cancelled {{ color: #E68619; }}
+.risk-status-running {{ color: #1473E6; }}
+
+/* ── CM execution header label ── */
+.risk-execution-header {{
+    color: #6E6E6E;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}}
+
+/* ── Workspace marker / card target ── */
+.risk-workspace-marker {{
+    display: none;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-workspace-marker) {{
+    background: #FFFFFF !important;
+    border: 1px solid #E0E0E0 !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}}
+.risk-workspace-help {{
+    color: #6E6E6E;
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin: 0;
+}}
+
+/* ── Selected execution row highlight ── */
+.cm-row-selected {{
+    background: #EBF4FF !important;
+    border-left: 3px solid #1473E6 !important;
+}}
+
+/* ── SHA input bar ── */
+.cm-sha-bar {{
+    background: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin: 8px 0 6px 0;
+}}
+.cm-sha-bar-title {{
+    font-size: 13px;
+    font-weight: 600;
+    color: #1E1E1E;
+    margin: 0 0 4px 0;
+}}
+.cm-sha-bar-help {{
+    font-size: 12px;
+    color: #6E6E6E;
+    margin: 0;
+    line-height: 1.6;
+}}
+
+/* ── Legacy compat (unchanged pages) ── */
+.risk-customer-label {{
+    margin: 0 0 0.25rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}}
+.risk-workspace {{
+    background: var(--panel-bg);
+    border: 0.0625rem solid var(--border);
+    border-radius: 1.25rem;
+    box-shadow: var(--elevation);
+    padding: clamp(1rem, 2vw, 1.5rem);
+}}
+.risk-workspace-header {{
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}}
+.risk-execution-row {{
+    border-top: 0.0625rem solid var(--border-soft);
+}}
+.risk-execution-table {{
+    overflow-x: auto;
+    border: 0.0625rem solid var(--border);
+    border-radius: 1rem;
+}}
+.ra-table-wrap {{
+    padding: 0 1rem 1rem;
+    overflow-x: auto;
+}}
+.ra-table {{
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.8125rem;
+    color: var(--text);
+}}
+.ra-table th {{
+    padding: 0.625rem 0.75rem;
+    color: var(--text-muted);
+    background: var(--panel-soft);
+    border-bottom: 0.0625rem solid var(--border);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-align: left;
+    white-space: nowrap;
+}}
+.ra-table td {{
+    padding: 0.6875rem 0.75rem;
+    border-bottom: 0.0625rem solid var(--border-soft);
+    vertical-align: middle;
+    line-height: 1.35;
+}}
+.ra-table tbody tr:nth-child(even) {{
+    background: rgba(148, 163, 184, 0.05);
+}}
+.ra-table tbody tr.ra-selected {{
+    background: var(--sidebar-active);
+    box-shadow: inset 0.1875rem 0 0 var(--accent);
+}}
+.ra-table tbody tr:last-child td {{
+    border-bottom: 0;
+}}
+.ra-mono {{
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text);
+}}
+.ra-muted {{
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}}
+.ra-strong {{
+    color: var(--text);
+    font-weight: 600;
+}}
+.ra-chip {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 5.75rem;
+    border-radius: 999px;
+    padding: 0.1875rem 0.625rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border: 0.0625rem solid transparent;
+}}
+.ra-chip-finished {{
+    color: #12805C;
+    background: #EDFAF3;
+    border-color: #BDECD3;
+}}
+.ra-chip-failed, .ra-chip-error {{
+    color: #D7373F;
+    background: #FEF0F0;
+    border-color: #FBCECE;
+}}
+.ra-chip-cancelled {{
+    color: #9A5B00;
+    background: #FEF7E1;
+    border-color: #F8D49A;
+}}
+.ra-chip-running {{
+    color: #1473E6;
+    background: #EBF4FF;
+    border-color: #B7D7FF;
+}}
+.ra-table-select {{
+    padding: 0 1rem 1rem;
+    max-width: 32rem;
+}}
+[data-testid="stMain"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {{
+    background: var(--panel-bg) !important;
+    border-color: var(--border) !important;
+    border-radius: 0.75rem !important;
+    color: var(--text) !important;
+}}
+[data-testid="stMain"] [data-testid="stSelectbox"] [data-baseweb="select"] svg {{
+    fill: var(--text-muted) !important;
+}}
+@media (max-width: 47.999rem) {{
+    [data-testid="stSidebar"] {{
+        min-width: 3.5rem !important;
+        max-width: 3.5rem !important;
+    }}
+    .risk-workspace-header {{
+        flex-direction: column;
+    }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1976,12 +2412,24 @@ def get_data_or_stop():
             f'padding:14px 18px;font-size:13px;color:#1473E6;margin-top:20px">'
             f'<span style="font-size:1.2rem">⟳</span>'
             f'&nbsp;<div><strong>Fetching data for {_active_customer["short"]} from Splunk...</strong><br>'
-            f'<span style="font-size:12px;opacity:0.8">First load for this customer takes ~30 seconds. '
-            f'Click <b>Refresh Data</b> in the sidebar when ready.</span></div>'
+            f'<span style="font-size:12px;opacity:0.8">This takes ~30 seconds on first load.</span></div>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        st.stop()
+        if st.button("↺ Check again", key="_loading_check_again", type="primary"):
+            try:
+                load_splunk_data.clear()
+            except Exception:
+                pass
+            st.rerun()
+        # Auto-rerun every 5 seconds while waiting
+        import time as _t_load
+        _t_load.sleep(5)
+        try:
+            load_splunk_data.clear()
+        except Exception:
+            pass
+        st.rerun()
 
     # Auto-enrich pending predictions with actual outcomes from Splunk
     # Pass program_id so we only resolve predictions for the active customer.
@@ -2013,24 +2461,795 @@ if "sb_open" not in st.session_state:
     st.session_state["sb_open"] = True
 
 
+def _render_top_navigation_bar() -> None:
+    """Render the Fixed Top Navigation Bar with customer selection and account menu."""
+    import json
+    import streamlit.components.v1 as components
+
+    # Serialize customer data
+    active_customer = st.session_state.get("selected_customer", list(_CUSTOMERS.keys())[0])
+    customers_list = list(_CUSTOMERS.keys())
+    theme_name = st.session_state.get("ui_theme", "light")
+    theme_colors = _THEMES[theme_name]
+
+    style_content = f"""
+    .custom-top-bar {{
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: {_TOPBAR_HEIGHT_CSS};
+        background-color: {theme_colors["surface"]} !important;
+        border-bottom: 1px solid {theme_colors["border"]} !important;
+        color: {theme_colors["text"]} !important;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px;
+        box-sizing: border-box;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }}
+
+    .top-bar-left, .top-bar-right {{
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }}
+
+    .hamburger-btn {{
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 4px;
+        color: {theme_colors["text_muted"]} !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background-color 0.15s, color 0.15s;
+    }}
+
+    .hamburger-btn:hover {{
+        background-color: {theme_colors["border2"]} !important;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .hamburger-btn svg {{
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+    }}
+
+    .logo-container {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+        text-decoration: none;
+    }}
+
+    .app-logo {{
+        width: 24px;
+        height: 24px;
+        color: {theme_colors["blue"]} !important;
+    }}
+
+    .app-name {{
+        font-size: 16px;
+        font-weight: 700;
+        letter-spacing: -0.2px;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .customer-selector-container {{
+        position: relative;
+    }}
+
+    .customer-selector-btn {{
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 6px 12px;
+        border-radius: 6px;
+        color: {theme_colors["text_sub"]} !important;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        transition: background-color 200ms ease, color 200ms ease;
+    }}
+
+    .customer-selector-btn:hover {{
+        background-color: {theme_colors["border2"]} !important;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .customer-selector-btn:focus {{
+        outline: none;
+    }}
+
+    .selected-customer-name {{
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+
+    .chevron-icon {{
+        width: 14px;
+        height: 14px;
+        fill: currentColor;
+        transition: transform 0.15s ease;
+    }}
+
+    .customer-selector-container.open .chevron-icon {{
+        transform: rotate(180deg);
+    }}
+
+    .customer-dropdown-menu {{
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        width: 260px;
+        background-color: {theme_colors["surface"]} !important;
+        border: 1px solid {theme_colors["border"]} !important;
+        border-radius: 8px;
+        box-shadow: {theme_colors["shadow"]} !important;
+        z-index: 1000000;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transform-origin: top right;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        opacity: 0;
+        transform: scale(0.95);
+        pointer-events: none;
+    }}
+
+    .customer-dropdown-menu.show {{
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+    }}
+
+    .search-container {{
+        display: flex;
+        align-items: center;
+        padding: 8px 12px;
+        border-bottom: 1px solid {theme_colors["border2"]} !important;
+        gap: 8px;
+    }}
+
+    .search-icon {{
+        width: 16px;
+        height: 16px;
+        fill: {theme_colors["text_muted"]} !important;
+        flex-shrink: 0;
+    }}
+
+    .customer-search-input {{
+        border: none;
+        outline: none;
+        font-size: 13px;
+        width: 100%;
+        background: transparent;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .customer-search-input::placeholder {{
+        color: {theme_colors["text_muted"]} !important;
+    }}
+
+    .customer-list-container {{
+        max-height: 240px;
+        overflow-y: auto;
+        padding: 4px 0;
+    }}
+
+    .customer-list-container::-webkit-scrollbar {{
+        width: 6px;
+    }}
+
+    .customer-list-container::-webkit-scrollbar-track {{
+        background: transparent;
+    }}
+
+    .customer-list-container::-webkit-scrollbar-thumb {{
+        background-color: {theme_colors["border"]} !important;
+        border-radius: 3px;
+    }}
+
+    .customer-item {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 400;
+        color: {theme_colors["text_sub"]} !important;
+        cursor: pointer;
+        transition: background-color 150ms ease, color 150ms ease;
+        user-select: none;
+    }}
+
+    .customer-item:hover, .customer-item.focused {{
+        background-color: {theme_colors["border2"]} !important;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .customer-item.active {{
+        font-weight: 600;
+        color: {theme_colors["blue"]} !important;
+        background-color: {theme_colors["border2"]} !important;
+    }}
+
+    .checkmark-icon {{
+        width: 14px;
+        height: 14px;
+        fill: currentColor;
+        opacity: 0;
+    }}
+
+    .customer-item.active .checkmark-icon {{
+        opacity: 1;
+    }}
+
+    .icon-nav-btn {{
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 4px;
+        color: {theme_colors["text_muted"]} !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background-color 0.15s, color 0.15s;
+    }}
+
+    .icon-nav-btn:hover {{
+        background-color: {theme_colors["border2"]} !important;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .icon-nav-btn svg {{
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+    }}
+
+    .user-profile-avatar {{
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background-color: {theme_colors["blue"]} !important;
+        color: #ffffff !important;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s;
+        user-select: none;
+        position: relative;
+    }}
+
+    .user-profile-avatar:hover {{
+        transform: scale(1.05);
+    }}
+
+    /* Account Dropdown */
+    .account-dropdown-menu {{
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        width: 200px;
+        background-color: {theme_colors["surface"]} !important;
+        border: 1px solid {theme_colors["border"]} !important;
+        border-radius: 8px;
+        box-shadow: {theme_colors["shadow"]} !important;
+        z-index: 1000000;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transform-origin: top right;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        opacity: 0;
+        transform: scale(0.95);
+        pointer-events: none;
+        font-weight: normal;
+        color: {theme_colors["text"]} !important;
+    }}
+
+    .user-profile-avatar.open .account-dropdown-menu {{
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+    }}
+
+    .account-info {{
+        padding: 12px 16px;
+        border-bottom: 1px solid {theme_colors["border2"]} !important;
+        font-size: 12px;
+        text-align: left;
+    }}
+
+    .account-email {{
+        color: {theme_colors["text_muted"]} !important;
+        font-size: 11px;
+        margin-top: 2px;
+    }}
+
+    .account-item {{
+        padding: 8px 16px;
+        font-size: 12px;
+        color: {theme_colors["text_sub"]} !important;
+        cursor: pointer;
+        transition: background-color 150ms ease, color 150ms ease;
+        text-align: left;
+    }}
+
+    .account-item:hover {{
+        background-color: {theme_colors["border2"]} !important;
+        color: {theme_colors["text"]} !important;
+    }}
+    """
+
+    html_content = f"""
+    <div id="top-bar-left-section" class="top-bar-left">
+        <button class="hamburger-btn" id="top-bar-hamburger" title="Toggle Sidebar">
+            <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        </button>
+        <div class="logo-container" id="top-bar-logo">
+            <svg class="app-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            <span class="app-name">Argus</span>
+        </div>
+    </div>
+    <div id="top-bar-right-section" class="top-bar-right">
+        <div class="customer-selector-container" id="customer-selector-container">
+            <button class="customer-selector-btn" id="customer-selector-trigger">
+                <span class="selected-customer-name">{active_customer}</span>
+                <svg class="chevron-icon" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5H7z"/></svg>
+            </button>
+            <div class="customer-dropdown-menu" id="customer-dropdown">
+                <div class="search-container">
+                    <svg class="search-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    <input type="text" class="customer-search-input" id="customer-search-input" placeholder="Search customers..." autocomplete="off">
+                </div>
+                <div class="customer-list-container" id="customer-list-container"></div>
+            </div>
+        </div>
+        <button class="icon-nav-btn" title="Notifications">
+            <svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 4.36 6 6.92 6 10v5l-2 2v1h16v-1l-2-2z"/></svg>
+        </button>
+        <div class="user-profile-avatar" id="user-avatar-container">
+            <span>V</span>
+            <div class="account-dropdown-menu" id="account-dropdown">
+                <div class="account-info">
+                    <div style="font-weight: 600;">Vanshika Sharma</div>
+                    <div class="account-email">vanshika@example.com</div>
+                </div>
+                <div class="account-item">Profile Settings</div>
+                <div class="account-item">Experience Cloud Settings</div>
+                <div class="account-item" style="border-top: 1px solid {theme_colors["border2"]}; color: {theme_colors["red"]} !important;">Sign Out</div>
+            </div>
+        </div>
+    </div>
+    """
+
+    js_content = f"""
+    <script>
+    (function() {{
+        const parentDoc = window.parent.document;
+        
+        // 1. Inject or update CSS
+        let styleEl = parentDoc.getElementById('custom-top-bar-styles');
+        if (!styleEl) {{
+            styleEl = parentDoc.createElement('style');
+            styleEl.id = 'custom-top-bar-styles';
+            parentDoc.head.appendChild(styleEl);
+        }}
+        styleEl.textContent = `{style_content}`;
+        
+        // 2. Inject or update the top bar element
+        let topBar = parentDoc.getElementById('custom-top-navigation-bar');
+        if (!topBar) {{
+            topBar = parentDoc.createElement('div');
+            topBar.id = 'custom-top-navigation-bar';
+            
+            const appView = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+            if (appView) {{
+                appView.insertBefore(topBar, appView.firstChild);
+            }} else {{
+                parentDoc.body.insertBefore(topBar, parentDoc.body.firstChild);
+            }}
+        }}
+        topBar.className = 'custom-top-bar';
+        topBar.innerHTML = `{html_content}`;
+        
+        // Data variables
+        const customers = {json.dumps(customers_list)};
+        const activeCustomer = {json.dumps(active_customer)};
+        
+        let focusedIndex = -1;
+        
+        // Helper to close dropdowns
+        function closeDropdown() {{
+            const dropdown = parentDoc.getElementById('customer-dropdown');
+            const container = parentDoc.getElementById('customer-selector-container');
+            if (dropdown && container) {{
+                dropdown.classList.remove('show');
+                container.classList.remove('open');
+            }}
+            focusedIndex = -1;
+        }}
+        
+        function closeAccountDropdown() {{
+            const avatar = parentDoc.getElementById('user-avatar-container');
+            if (avatar) {{
+                avatar.classList.remove('open');
+            }}
+        }}
+        
+        // Select customer function
+        // Use a real parent-page navigation so Streamlit processes the updated
+        // query param on rerun. history.replaceState only changes the address
+        // bar and leaves the active customer/session context unchanged.
+        function selectCustomer(customerName) {{
+            closeDropdown();
+            if (customerName === activeCustomer) return;
+
+            try {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('customer', customerName);
+                window.parent.location.assign(url.href);
+            }} catch(e) {{
+                try {{
+                    const url = new URL(window.parent.location.href);
+                    url.searchParams.set('customer', customerName);
+                    window.parent.location.href = url.href;
+                }} catch(e2) {{}}
+            }}
+        }}
+        
+        // Render customer list helper
+        function renderCustomerList(filterText = '') {{
+            const listContainer = parentDoc.getElementById('customer-list-container');
+            if (!listContainer) return;
+            
+            listContainer.innerHTML = '';
+            const filtered = customers.filter(c => c.toLowerCase().includes(filterText.toLowerCase()));
+            
+            if (filtered.length === 0) {{
+                const noResult = parentDoc.createElement('div');
+                noResult.className = 'customer-item';
+                noResult.style.color = '#888';
+                noResult.style.cursor = 'default';
+                noResult.style.backgroundColor = 'transparent';
+                noResult.textContent = 'No customers found';
+                listContainer.appendChild(noResult);
+                return;
+            }}
+            
+            filtered.forEach((customer, index) => {{
+                const item = parentDoc.createElement('a');
+                item.className = 'customer-item';
+                item.href = (() => {{
+                    try {{
+                        const url = new URL(window.parent.location.href);
+                        url.searchParams.set('customer', customer);
+                        return url.href;
+                    }} catch(e) {{
+                        return '?customer=' + encodeURIComponent(customer);
+                    }}
+                }})();
+                if (customer === activeCustomer) {{
+                    item.classList.add('active');
+                }}
+                item.dataset.index = index;
+                item.dataset.value = customer;
+                item.style.textDecoration = 'none';
+
+                // Use textContent — avoids Python f-string vs JS template-literal conflict
+                const nameSpan = parentDoc.createElement('span');
+                nameSpan.textContent = customer;
+                item.appendChild(nameSpan);
+                if (customer === activeCustomer) {{
+                    const tick = parentDoc.createElement('span');
+                    tick.textContent = '✓';
+                    tick.style.cssText = 'color:#1473E6;margin-left:auto;font-size:12px';
+                    item.appendChild(tick);
+                }}
+
+                listContainer.appendChild(item);
+            }});
+
+            // ── Add new customer ──
+            const divider = parentDoc.createElement('div');
+            divider.style.cssText = 'height:1px;background:rgba(0,0,0,0.1);margin:4px 0';
+            listContainer.appendChild(divider);
+
+            const addItem = parentDoc.createElement('div');
+            addItem.className = 'customer-item';
+            addItem.style.cssText = 'color:#1473E6;font-weight:500;gap:6px;display:flex;align-items:center';
+            addItem.textContent = '+ Add new customer';
+            addItem.addEventListener('click', () => {{
+                closeDropdown();
+                const allBtns = parentDoc.querySelectorAll('button');
+                let found = false;
+                for (const btn of allBtns) {{
+                    const t = (btn.innerText || btn.textContent || '').replace(/\s+/g,' ').trim();
+                    if (t.includes('Repo Settings')) {{ btn.click(); found = true; break; }}
+                }}
+                if (!found) {{
+                    try {{
+                        const url = new URL(window.parent.location.href);
+                        url.searchParams.set('page', 'Repo Settings');
+                        window.parent.location.href = url.href;
+                    }} catch(e) {{}}
+                }}
+            }});
+            listContainer.appendChild(addItem);
+        }}
+        
+        // 3. Set up event listeners
+        const trigger = parentDoc.getElementById('customer-selector-trigger');
+        const dropdown = parentDoc.getElementById('customer-dropdown');
+        const container = parentDoc.getElementById('customer-selector-container');
+        const searchInput = parentDoc.getElementById('customer-search-input');
+        const listContainer = parentDoc.getElementById('customer-list-container');
+
+        if (listContainer) {{
+            listContainer.onclick = (e) => {{
+                const item = e.target.closest('.customer-item');
+                if (!item || !listContainer.contains(item)) return;
+                if (item.tagName === 'A') return;
+                const customerName = item.dataset.value;
+                if (customerName) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectCustomer(customerName);
+                }}
+            }};
+        }}
+        
+        if (trigger && dropdown && container) {{
+            trigger.onclick = (e) => {{
+                e.stopPropagation();
+                closeAccountDropdown();
+                const isOpen = dropdown.classList.contains('show');
+                if (isOpen) {{
+                    closeDropdown();
+                }} else {{
+                    dropdown.classList.add('show');
+                    container.classList.add('open');
+                    renderCustomerList('');
+                    if (searchInput) {{
+                        searchInput.value = '';
+                        setTimeout(() => searchInput.focus(), 50);
+                    }}
+                }}
+            }};
+        }}
+        
+        if (searchInput) {{
+            searchInput.onclick = (e) => e.stopPropagation();
+            searchInput.oninput = (e) => {{
+                renderCustomerList(e.target.value);
+                focusedIndex = -1;
+            }};
+            
+            searchInput.onkeydown = (e) => {{
+                const items = Array.from(parentDoc.querySelectorAll('.customer-item:not([style*="cursor: default"])'));
+                if (items.length === 0) return;
+                
+                if (e.key === 'ArrowDown') {{
+                    e.preventDefault();
+                    focusedIndex = (focusedIndex + 1) % items.length;
+                    updateFocus(items);
+                }} else if (e.key === 'ArrowUp') {{
+                    e.preventDefault();
+                    focusedIndex = (focusedIndex - 1 + items.length) % items.length;
+                    updateFocus(items);
+                }} else if (e.key === 'Enter') {{
+                    e.preventDefault();
+                    if (focusedIndex >= 0 && focusedIndex < items.length) {{
+                        items[focusedIndex].click();
+                    }} else if (items.length > 0) {{
+                        items[0].click();
+                    }}
+                }} else if (e.key === 'Escape') {{
+                    e.preventDefault();
+                    closeDropdown();
+                }}
+            }};
+        }}
+        
+        function updateFocus(items) {{
+            items.forEach((item, index) => {{
+                if (index === focusedIndex) {{
+                    item.classList.add('focused');
+                    item.scrollIntoView({{ block: 'nearest' }});
+                }} else {{
+                    item.classList.remove('focused');
+                }}
+            }});
+        }}
+
+        function findSidebarStateToggle() {{
+            const bridgeLabels = new Set(['ARGUS_SIDEBAR_TOGGLE_BRIDGE', '__toggle_sidebar__', 'toggle_sidebar']);
+            const xpath = "//*[normalize-space(text())='ARGUS_SIDEBAR_TOGGLE_BRIDGE' or normalize-space(text())='__toggle_sidebar__' or normalize-space(text())='toggle_sidebar']";
+            const element = parentDoc.evaluate(xpath, parentDoc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            if (element) {{
+                return element.closest('button');
+            }}
+            const buttons = parentDoc.querySelectorAll('button');
+            for (const btn of buttons) {{
+                const label = (btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim();
+                if (bridgeLabels.has(label)) {{
+                    return btn;
+                }}
+            }}
+            return null;
+        }}
+
+        function clickSidebarStateToggle(btn) {{
+            try {{
+                btn.dispatchEvent(new MouseEvent('pointerdown', {{ bubbles: true, cancelable: true, view: window.parent }}));
+                btn.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, view: window.parent }}));
+                btn.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, view: window.parent }}));
+            }} catch(e) {{}}
+            btn.click();
+        }}
+        
+        // Hamburger toggle
+        const hamburgerBtn = parentDoc.getElementById('top-bar-hamburger');
+        if (hamburgerBtn) {{
+            hamburgerBtn.onclick = (e) => {{
+                e.preventDefault();
+                e.stopPropagation();
+                closeDropdown();
+                closeAccountDropdown();
+
+                const stateToggle = findSidebarStateToggle();
+                if (stateToggle) {{
+                    clickSidebarStateToggle(stateToggle);
+                    return;
+                }}
+
+                const nativeToggle = parentDoc.querySelector('button[title="Toggle sidebar"]');
+                if (nativeToggle) {{
+                    nativeToggle.click();
+                }}
+            }};
+        }}
+        
+        // Account avatar dropdown toggle
+        const avatar = parentDoc.getElementById('user-avatar-container');
+        if (avatar) {{
+            avatar.onclick = (e) => {{
+                e.stopPropagation();
+                closeDropdown();
+                avatar.classList.toggle('open');
+            }};
+        }}
+        
+        // Close dropdowns on clicking outside
+        if (parentDoc.body && !parentDoc.body.dataset.topBarBound) {{
+            parentDoc.body.dataset.topBarBound = "true";
+            parentDoc.addEventListener('click', (e) => {{
+                const dropdown = parentDoc.getElementById('customer-dropdown');
+                const trigger = parentDoc.getElementById('customer-selector-trigger');
+                if (dropdown && trigger && !dropdown.contains(e.target) && !trigger.contains(e.target)) {{
+                    closeDropdown();
+                }}
+                
+                const avatar = parentDoc.getElementById('user-avatar-container');
+                if (avatar && !avatar.contains(e.target)) {{
+                    closeAccountDropdown();
+                }}
+            }});
+        }}
+        
+        // 4. Hide hidden sidebar button
+        function hideHiddenToggleButton() {{
+            const btn = findSidebarStateToggle();
+            if (btn) {{
+                btn.setAttribute('aria-hidden', 'true');
+                btn.tabIndex = -1;
+                btn.style.setProperty('display', 'block', 'important');
+                btn.style.setProperty('width', '1px', 'important');
+                btn.style.setProperty('height', '1px', 'important');
+                btn.style.setProperty('min-height', '1px', 'important');
+                btn.style.setProperty('padding', '0', 'important');
+                btn.style.setProperty('opacity', '0', 'important');
+                const container = btn.closest('.element-container') || btn.closest('[data-testid="element-container"]');
+                if (container) {{
+                    container.style.setProperty('position', 'absolute', 'important');
+                    container.style.setProperty('width', '1px', 'important');
+                    container.style.setProperty('height', '1px', 'important');
+                    container.style.setProperty('min-height', '1px', 'important');
+                    container.style.setProperty('margin', '0', 'important');
+                    container.style.setProperty('padding', '0', 'important');
+                    container.style.setProperty('overflow', 'hidden', 'important');
+                    container.style.setProperty('opacity', '0', 'important');
+                    container.style.setProperty('pointer-events', 'auto', 'important');
+                    container.style.setProperty('transform', 'translateX(-9999px)', 'important');
+                }}
+            }}
+        }}
+        hideHiddenToggleButton();
+        setTimeout(hideHiddenToggleButton, 200);
+        setTimeout(hideHiddenToggleButton, 500);
+        setTimeout(hideHiddenToggleButton, 1000);
+    }})();
+    </script>
+    """
+    components.html(js_content, height=0)
+
+
+def _render_customer_context() -> None:
+    """Render the Risk Assessment top bar."""
+    st.markdown(
+        '<div style="margin-bottom:1rem">'
+        '<p class="pg-title">Risk Assessment</p>'
+        '<p class="pg-sub">Should this Dev-pipeline result be promoted to Production?</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _toggle_sidebar_state() -> None:
+    st.session_state["sb_open"] = not st.session_state.get("sb_open", True)
+
+
 @st.fragment
 def _render_sidebar():
     _open = st.session_state.get("sb_open", True)
     _page = st.session_state.get("page", "Overview")
     _w    = "220px" if _open else "56px"
-
-    # Width CSS only. Closed mode keeps a compact rail for centered icons.
-    _collapsed_btn = "" if _open else """
-[data-testid="stSidebar"] button {
-    padding: 0 !important;
+    _collapsed_css = """
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] button[kind="secondary"],
+[data-testid="stSidebar"] button[kind="primary"],
+[data-testid="stSidebar"] button:not([title="Toggle sidebar"]):not([kind="headerNoPadding"]),
+[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) {
     justify-content: center !important;
+    text-align: center !important;
     gap: 0 !important;
-    letter-spacing: 0 !important;
+    padding: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    border-left-width: 0 !important;
 }
-[data-testid="stSidebar"] .stButton > button [data-testid="stMarkdownContainer"] {
-    display: none !important;
+[data-testid="stSidebar"] button:not([kind="headerNoPadding"]) > span,
+[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) > span {
+    width: 100% !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
 }
-"""
+[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
+[data-testid="stSidebar"] button:not([kind="headerNoPadding"]) [data-testid="stIconMaterial"],
+[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) [data-testid="stIconMaterial"] {
+    margin: 0 auto !important;
+    font-size: 1.35rem !important;
+    width: 1.35rem !important;
+    height: 1.35rem !important;
+    line-height: 1 !important;
+    text-align: center !important;
+    transform: translateX(4px) !important;
+}
+""" if not _open else ""
+
     st.markdown(f"""
 <style>
 [data-testid="stSidebar"] {{
@@ -2038,52 +3257,57 @@ def _render_sidebar():
     max-width: {_w} !important;
     width:     {_w} !important;
 }}
-{_collapsed_btn}
+[data-testid="stSidebar"] button[title="Toggle sidebar"] {{
+    display: none !important;
+}}
+[data-testid="stSidebar"] > div:first-child,
+[data-testid="stSidebar"] > div:first-child > div,
+[data-testid="stSidebar"] > div:first-child > div > div {{
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}}
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] button[kind="secondary"],
+[data-testid="stSidebar"] button[kind="primary"] {{
+    margin-block: 0 !important;
+}}
+[data-testid="stSidebar"] [data-testid="element-container"]:has(#sidebar-toggle-bridge-marker),
+[data-testid="stSidebar"] .element-container:has(#sidebar-toggle-bridge-marker),
+[data-testid="stSidebar"] [data-testid="element-container"]:has(#sidebar-toggle-bridge-marker) + [data-testid="element-container"],
+[data-testid="stSidebar"] .element-container:has(#sidebar-toggle-bridge-marker) + .element-container {{
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    min-height: 1px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: auto !important;
+    transform: translateX(-9999px) !important;
+}}
+[data-testid="stSidebar"] [data-testid="element-container"]:has(#sidebar-toggle-bridge-marker) button,
+[data-testid="stSidebar"] .element-container:has(#sidebar-toggle-bridge-marker) button,
+[data-testid="stSidebar"] [data-testid="element-container"]:has(#sidebar-toggle-bridge-marker) + [data-testid="element-container"] button,
+[data-testid="stSidebar"] .element-container:has(#sidebar-toggle-bridge-marker) + .element-container button {{
+    display: block !important;
+    width: 1px !important;
+    height: 1px !important;
+    min-height: 1px !important;
+    padding: 0 !important;
+    opacity: 0 !important;
+}}
+{_collapsed_css}
 </style>
+<span id="sidebar-toggle-bridge-marker"></span>
 """, unsafe_allow_html=True)
 
-    # ── Hamburger — same height as nav items, no border ──
-    if st.button(
-        "Menu" if _open else " ",
-        key="_hamburger",
-        use_container_width=True,
-        help="Collapse sidebar" if _open else "Expand sidebar",
-        icon=":material/menu:",
-    ):
-        st.session_state["sb_open"] = not _open
-        st.rerun()
-
-    st.markdown('<div style="height:2px"></div>', unsafe_allow_html=True)
-
-    if _open:
-        st.markdown(
-            f'<div style="padding:0 12px 4px;overflow:hidden;white-space:nowrap">'
-            f'<p style="font-size:0.78rem;font-weight:700;color:#1A1A1A;margin:0 0 2px 0">Argus</p>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        # ── Customer selector ──
-        _cur = st.session_state.get("selected_customer", list(_CUSTOMERS.keys())[0])
-        # Keep URL in sync with current customer
-        if st.query_params.get("customer") != _cur:
-            st.query_params["customer"] = _cur
-        _new = st.selectbox(
-            "Customer",
-            list(_CUSTOMERS.keys()),
-            index=list(_CUSTOMERS.keys()).index(_cur) if _cur in _CUSTOMERS else 0,
-            key="_customer_select",
-            label_visibility="collapsed",
-        )
-        if _new != _cur:
-            st.session_state["selected_customer"] = _new
-            st.query_params["customer"] = _new   # persist in URL so refresh restores it
-            st.session_state.pop("risk_report", None)
-            st.session_state.pop("risk_base_bundle", None)
-            st.cache_resource.clear()
-            st.rerun()
-        st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+    st.button(
+        "ARGUS_SIDEBAR_TOGGLE_BRIDGE",
+        key="_topbar_sidebar_toggle",
+        help="Toggle sidebar",
+        on_click=_toggle_sidebar_state,
+    )
 
     # ── Nav items ──
     for _p in _PAGES:
@@ -2100,9 +3324,19 @@ def _render_sidebar():
             st.session_state["page"] = _p
             st.rerun()
 
-    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    # ── Utilities ────────────────────────────────────────────────────────────
+    _theme_label = "Dark mode" if st.session_state["ui_theme"] == "light" else "Light mode"
+    if st.button(
+        _theme_label if _open else " ",
+        key="_theme_switch",
+        use_container_width=True,
+        help=f"Switch to {_theme_label.lower()}",
+        icon=":material/dark_mode:" if st.session_state["ui_theme"] == "light" else ":material/light_mode:",
+    ):
+        st.session_state["ui_theme"] = "dark" if st.session_state["ui_theme"] == "light" else "light"
+        st.rerun()
 
-    # ── Cache status + refresh (always full text, clipped when narrow) ──
+    # ── Cache status + refresh ────────────────────────────────────────────────
     try:
         from analysis.ingest import cache_info, clear_cache
         _info = cache_info()
@@ -2114,9 +3348,9 @@ def _render_sidebar():
             _sc, _st2 = "#889098", "No cache"
         if _open:
             st.markdown(
-                f'<p style="font-size:0.67rem;color:{_sc};padding:0 12px;margin:0 0 4px;white-space:nowrap;overflow:hidden">'
-                f'<span style="display:inline-block;width:5px;height:5px;border-radius:50%;'
-                f'background:{_sc};margin-right:4px;vertical-align:middle"></span>{_st2}</p>',
+                f'<p style="font-size:0.6875rem;color:{_sc};padding:0 0.75rem;margin:0 0 0.25rem;white-space:nowrap;overflow:hidden">'
+                f'<span style="display:inline-block;width:0.375rem;height:0.375rem;border-radius:9999px;'
+                f'background:{_sc};margin-right:0.25rem;vertical-align:middle"></span>{_st2}</p>',
                 unsafe_allow_html=True,
             )
         if st.button(
@@ -2135,11 +3369,13 @@ def _render_sidebar():
 
     if _open:
         st.markdown(
-            f'<p style="font-size:0.62rem;color:#CCCCCC;padding:0.6rem 12px 0.5rem;margin:0;white-space:nowrap;overflow:hidden">'
-            f'IDFC First Bank Limited · AEM</p>',
+            f'<p style="font-size:0.6875rem;color:{T["sidebar_text_dim"]};padding:0.75rem;margin:0;white-space:nowrap;overflow:hidden">'
+            f'DevOps release governance</p>',
             unsafe_allow_html=True,
         )
 
+
+_render_top_navigation_bar()
 
 with st.sidebar:
     _render_sidebar()
@@ -4961,7 +6197,6 @@ elif page == "Risk Assessment":
         st.markdown(historical_matches_carousel_html(_hist_hits, T), unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-
 # ═══════════════════════════════════════════════════════════
 # PAGE 4 — FAILURE PINPOINT
 # ═══════════════════════════════════════════════════════════
@@ -6143,7 +7378,7 @@ elif page == "Repo Settings":
                 st.success(f"Repo already cloned at `{_git_local}` — will fetch updates only, no duplicate clone.")
 
             # Always use discovered submodules — auto-detected from .gitmodules after clone
-            _rc_cfg = json.loads(Path("data/repo_config.json").read_text()) if Path("data/repo_config.json").exists() else {}
+            _rc_cfg = json.loads(_repo_config_path().read_text()) if _repo_config_path().exists() else {}
             _new_sms = _rc_cfg.get(_edit_mode if _edit_mode != "— Add new customer —" else "", {}).get("submodules", [])
 
             st.markdown("")
@@ -6176,9 +7411,9 @@ elif page == "Repo Settings":
 
                     # Update repo_config.json with submodules
                     if _new_sms or _edit_mode != "— Add new customer —":
-                        _rc = json.loads(Path("data/repo_config.json").read_text()) if Path("data/repo_config.json").exists() else {}
+                        _rc = json.loads(_repo_config_path().read_text()) if _repo_config_path().exists() else {}
                         _rc[_cust_name] = {**_new_cfg, "submodules": _new_sms}
-                        Path("data/repo_config.json").write_text(json.dumps(_rc, indent=2))
+                        _repo_config_path().write_text(json.dumps(_rc, indent=2))
 
                     st.success(f"✓ Saved **{_cust_name}**")
 
@@ -6229,13 +7464,46 @@ elif page == "Repo Settings":
                                 st.warning(f"Git operation: {_ge}. You can fetch manually later.")
 
                     st.success(f"**{_cust_name}** has been added successfully.")
+
+                    # Auto-run historical initialization in background — no button needed.
+                    # Runs once per customer after first save. Populates ChromaDB from
+                    # last 30 days of Splunk data so predictions have historical context
+                    # from day one. Skipped if ChromaDB already has data for this customer.
+                    def _auto_init_bg(_cfg=_new_cfg, _name=_cust_name):
+                        import threading as _thr
+                        def _run():
+                            try:
+                                import os as _os
+                                from connectors.splunk_connector import fetch_pipeline_list, fetch_failed_steps
+                                from analysis.cold_start import initialize_customer
+                                _pid = _cfg["program_id"]
+                                _os.environ["PROGRAM_ID"]   = _pid
+                                _os.environ["GIT_LOCAL_DIR"] = _cfg.get("git_local_dir", "")
+                                _cs_pdf = fetch_pipeline_list(int(_pid))
+                                _cs_fdf = fetch_failed_steps(int(_pid))
+                                initialize_customer(
+                                    program_id    = _pid,
+                                    tenant_id     = _cfg.get("tenant_id", ""),
+                                    pipeline_df   = _cs_pdf,
+                                    failed_df     = _cs_fdf,
+                                    git_local_dir = _cfg.get("git_local_dir", ""),
+                                    git_branch    = _cfg.get("git_branch", "master"),
+                                    git_url       = _cfg.get("git_url", ""),
+                                    git_username  = _cfg.get("git_username", ""),
+                                    git_password  = _git_pwd,
+                                )
+                                print(f"  [onboard] Historical init complete for {_name}")
+                            except Exception as _e:
+                                print(f"  [onboard] Historical init failed for {_name}: {_e}")
+                        _thr.Thread(target=_run, daemon=True,
+                                    name=f"init-{_name}").start()
+
+                    _auto_init_bg()
                     st.info(
-                        f"**Heads up — new customer cold start:** This agent learns from historical pipeline data. "
-                        f"Since **{_cust_name}** has no history in the system yet, early predictions will rely primarily "
-                        f"on code structure analysis and environment signals — the historical pattern matching signal "
-                        f"will be empty until real pipeline runs accumulate. "
-                        f"Click **Initialize Historical Data** below to bootstrap from the last 30 days of Splunk data, "
-                        f"which significantly improves prediction quality from day one."
+                        f"⟳ **Building historical context for {_cust_name} in the background** — "
+                        f"fetching last 30 days of Splunk data and ingesting failure patterns into ChromaDB. "
+                        f"This takes 2-5 minutes and runs automatically. "
+                        f"Predictions work immediately using code analysis; historical matching activates once complete."
                     )
 
         # ── Cold Start Initialization ─────────────────────────────────────────

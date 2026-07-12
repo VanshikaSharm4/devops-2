@@ -22,8 +22,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_STORE_DIR  = Path(os.getenv("PREDICTION_STORE_DIR", "data/predictions"))
-_LEGACY_PATH = Path(os.getenv("PREDICTION_STORE_PATH", "data/predictions.jsonl"))
+def _resolve_store_dir() -> Path:
+    from analysis.paths import data_dir
+    _env = os.getenv("PREDICTION_STORE_DIR", "")
+    return Path(_env) if _env else data_dir() / "predictions"
+
+
+def _resolve_legacy_path() -> Path:
+    from analysis.paths import data_dir
+    _env = os.getenv("PREDICTION_STORE_PATH", "")
+    return Path(_env) if _env else data_dir() / "predictions.jsonl"
+
+
+_STORE_DIR   = _resolve_store_dir()
+_LEGACY_PATH = _resolve_legacy_path()
 
 
 def _store_path(program_id: str = "") -> Path:
