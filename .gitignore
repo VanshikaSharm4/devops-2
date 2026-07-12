@@ -19,3 +19,4 @@ venv/
 data/.secrets.json
 data/customer_config.json
 .claude/worktrees/
+.continue/
