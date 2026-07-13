@@ -1,4 +1,4 @@
-# DevOps Agent 2
+# Argus
 
 Clean rebuild of the Adobe Cloud Manager pipeline intelligence agent for IDFC First Bank.
 
@@ -30,12 +30,13 @@ Copy `.env.example` to `.env` locally and fill in only the systems you need:
 ## Main Entrypoints
 
 ```bash
+streamlit run dashboard/app.py
 python3 cli.py report --no-llm --no-logs
 python3 cli.py risk --commit <sha> --no-llm
 python3 cli.py compare --exec-a <id> --exec-b <id> --no-llm
 python3 cli.py pinpoint --execution-id <id> --no-llm
 python3 cli.py assess-failure --execution-id <id> --no-llm --no-reranker
-streamlit run dashboard/app.py
+
 ```
 
 ## Notes
@@ -43,4 +44,4 @@ streamlit run dashboard/app.py
 - The Cloud Manager Git connector avoids persisting credential-injected remote URLs.
 - Prompts ask for concise evidence/rationale fields, not hidden chain-of-thought.
 - `connectors/github_connector.py` is retained only as legacy compatibility code.
-# devops-2
+
