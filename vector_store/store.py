@@ -524,10 +524,20 @@ def ingest_live_failures(
 
 # ── Post-failure assessment ingest (additive) ─────────────────────────────────
 
-def ingest_post_failure_report(report: Any) -> str:
+def ingest_post_failure_report(report: Any, tenant_id: str = "", program_id: str = "") -> str:
     """Ingest a PostFailureRiskReport into failure_memory for future RAG."""
     fix_text = "; ".join(getattr(report, "fix_steps", []) or [])[:400]
     actions = "; ".join(getattr(report, "recommended_actions", []) or [])[:200]
+    # Resolve tenant — report may carry program_id, or caller passes it explicitly,
+    # or fall back to thread-safe customer context
+    _pid = program_id or str(getattr(report, "program_id", "")) or ""
+    _tid = tenant_id or _pid
+    if not _tid:
+        try:
+            from analysis.customer_context import get_program_id
+            _tid = _pid = get_program_id()
+        except Exception:
+            pass
     return store_failure(
         execution_id=getattr(report, "execution_id", "unknown"),
         step=getattr(report, "failed_step", ""),
@@ -537,7 +547,7 @@ def ingest_post_failure_report(report: Any) -> str:
         root_cause=getattr(report, "root_cause_summary", "")[:500],
         fix=fix_text or actions,
         pipeline=getattr(report, "pipeline", ""),
-        extra_meta={"source": "post_failure_assessment"},
+        extra_meta={"source": "post_failure_assessment", "tenant_id": _tid, "program_id": _pid},
     )
 
 
@@ -545,13 +555,14 @@ def ingest_post_failure_report(report: Any) -> str:
 
 def memory_stats() -> dict:
     """Return counts for the dashboard."""
+    _path = _chroma_dir()
     try:
         client = _client()
         cols = {c.name: c.count() for c in client.list_collections()}
         return {
             "failure_memory": cols.get("failure_memory", 0),
             "scan_memory":    cols.get("scan_memory", 0),
-            "db_path":        CHROMA_DIR,
+            "db_path":        _path,
         }
     except Exception as e:
-        return {"failure_memory": 0, "scan_memory": 0, "error": str(e)}
+        return {"failure_memory": 0, "scan_memory": 0, "db_path": _path, "error": str(e)}

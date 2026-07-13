@@ -13,15 +13,20 @@ from analysis.retrieval.hybrid_retriever import hybrid_retrieve, normalize_query
 from models.post_failure_report import LogSageRCAReport, PostFailureRiskReport
 
 
-def _offline_placeholder_log(step: str) -> str:
-    """Minimal synthetic log for offline --no-logs runs."""
-    return (
-        f"[INFO] Pipeline step {step} started\n"
-        "[ERROR] BUILD FAILURE — simulated offline log for stage-1 pruning test\n"
-        "npm ERR! code ELIFECYCLE\n"
-        "FAIL: integration test failed\n"
-    )
+# _offline_placeholder_log removed — synthetic logs cause LLM hallucination.
+# If a log cannot be fetched, we return None and show an explicit error to the user.
+# Never pass fake data to the LLM for RCA.
 
+
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
 
 def _fetch_execution_log(
     share_name: str,
@@ -35,7 +40,7 @@ def _fetch_execution_log(
 def _resolve_commit_sha(execution_id: str, pipeline_name: str) -> Optional[str]:
     try:
         from connectors.cm_connector import get_commit_sha_from_execution
-        program_id = os.getenv("PROGRAM_ID", "19905")
+        program_id = _get_ctx("program_id", "PROGRAM_ID")
         pipeline_id = os.getenv("PIPELINE_ID_DEV", "47202398")
         if "production" in pipeline_name.lower():
             pipeline_id = os.getenv("PIPELINE_ID_PROD", "2357452")
@@ -121,18 +126,41 @@ def assess_failed_execution(
     pipeline = str(rec.get("pipelineName", "") or "")
     share = share_map.get(str(execution_id))
 
-    log_text = ""
+    # ── Log fetch — never substitute fake data ───────────────────────────────
+    log_text: Optional[str] = None
+    log_error: Optional[str] = None
+
     if fetch_logs and share and step and step != "nan":
         try:
-            log_text = _fetch_execution_log(share, step, execution_id)
+            fetched = _fetch_execution_log(share, step, execution_id)
+            log_text = fetched if fetched and fetched.strip() else None
+            if log_text is None:
+                log_error = "Log file was empty — the step may not have produced output yet."
         except Exception as e:
-            log_text = f"[log fetch failed: {e}]"
-    elif not fetch_logs:
-        log_text = _offline_placeholder_log(step)
+            log_error = f"Log could not be fetched: {e}"
+    elif fetch_logs and not share:
+        log_error = "No Azure share found for this execution — log storage may not be configured."
+    elif fetch_logs and (not step or step == "nan"):
+        log_error = "Failed step is unknown — cannot fetch the right log file."
+    else:
+        # fetch_logs=False is a developer/test mode flag — no log, no analysis
+        log_error = "Log fetching disabled (fetch_logs=False). Pass fetch_logs=True for real analysis."
+
+    # If log unavailable, return immediately — do NOT run LLM on missing/fake data
+    if log_text is None:
+        error_result = {
+            "execution_id": execution_id,
+            "failed_step": step,
+            "pipeline": pipeline,
+            "log_unavailable": True,
+            "log_error": log_error,
+            "message": f"Analysis unavailable: {log_error}",
+        }
+        return error_result, f"## Log Unavailable\n\n{log_error}\n\nCheck Cloud Manager directly for the build log."
 
     # Stage 1
     stage1 = run_stage1(
-        log_text or "No log available",
+        log_text,
         pipeline_name=pipeline,
         failed_step=step,
         pipeline_df=pipeline_df,
@@ -202,7 +230,8 @@ def assess_failed_execution(
 
     try:
         from vector_store.store import ingest_post_failure_report
-        ingest_post_failure_report(report)
+        _prog = _get_ctx("program_id", "PROGRAM_ID")
+        ingest_post_failure_report(report, program_id=_prog)
     except Exception:
         pass
 

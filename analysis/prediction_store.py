@@ -22,6 +22,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
+
 def _resolve_store_dir() -> Path:
     from analysis.paths import data_dir
     _env = os.getenv("PREDICTION_STORE_DIR", "")
@@ -235,7 +245,7 @@ def _load_legacy_compat(program_id: str = "") -> List[Dict[str, Any]]:
     if program_id:
         return _load_from_path(_store_path(program_id))
     # Load file that matches current PROGRAM_ID env var if set
-    _pid = os.getenv("PROGRAM_ID", "")
+    _pid = _get_ctx("program_id", "PROGRAM_ID")
     if _pid:
         return _load_from_path(_store_path(_pid))
     return load_all()
@@ -254,7 +264,7 @@ def load_all_records() -> List[Dict[str, Any]]:
 
 def _load_compat() -> List[Dict[str, Any]]:
     """For code that uses STORE_PATH — reads current tenant's file."""
-    pid = os.getenv("PROGRAM_ID", "")
+    pid = _get_ctx("program_id", "PROGRAM_ID")
     return _load_from_path(_store_path(pid)) if pid else load_all()
 
 

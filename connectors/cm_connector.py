@@ -124,6 +124,118 @@ def _resolve_url(href: str) -> str:
     return urljoin(CM_BASE, href)
 
 
+def list_executions(
+    program_id: str,
+    pipeline_id: str,
+    tenant_id: str = DEFAULT_TENANT,
+    limit: int = 20,
+    timeout: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    List recent executions for a pipeline via the CM API.
+    Returns list of execution dicts — always live, no Splunk dependency.
+    CM API endpoint: GET /api/program/{programId}/pipeline/{pipelineId}/executions
+    """
+    url = f"{CM_BASE}/api/program/{program_id}/pipeline/{pipeline_id}/executions"
+    try:
+        r = requests.get(url, headers=_headers(tenant_id),
+                         params={"start": 0, "limit": limit},
+                         timeout=timeout)
+        if not r.ok:
+            return []
+        data = r.json()
+        # CM returns _embedded.executions
+        return (data.get("_embedded") or {}).get("executions") or []
+    except Exception:
+        return []
+
+
+def list_all_pipeline_executions(
+    program_id: str,
+    pipeline_ids: List[str],
+    tenant_id: str = DEFAULT_TENANT,
+    limit_per_pipeline: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch recent executions for multiple pipelines and merge into one list.
+    Used when Splunk is unavailable to populate the Risk Assessment execution table.
+    """
+    import pandas as _pd
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    all_execs: List[Dict[str, Any]] = []
+
+    def _fetch(pid):
+        return list_executions(program_id, pid, tenant_id, limit=limit_per_pipeline)
+
+    with ThreadPoolExecutor(max_workers=min(4, len(pipeline_ids))) as ex:
+        futures = {ex.submit(_fetch, pid): pid for pid in pipeline_ids if pid}
+        for fut in as_completed(futures):
+            try:
+                all_execs.extend(fut.result())
+            except Exception:
+                pass
+
+    return all_execs
+
+
+def cm_executions_to_dataframe(executions: List[Dict[str, Any]]):
+    """
+    Convert CM API execution list to a DataFrame matching the Splunk schema
+    used by the Risk Assessment page (executionId, Status, Deploy Start Time,
+    pipelineId, pipelineName, Duration (Min)).
+    """
+    import pandas as _pd
+    rows = []
+    for ex in executions:
+        eid = str(ex.get("id", ""))
+        status_raw = ex.get("status", "")
+        # Map CM status → Argus status
+        status = {
+            "FINISHED": "FINISHED",
+            "FAILED": "FAILED",
+            "RUNNING": "RUNNING",
+            "CANCELLED": "CANCELLED",
+            "CANCELLING": "CANCELLED",
+            "ERROR": "ERROR",
+            "WAITING": "RUNNING",
+            "SCHEDULED": "RUNNING",
+        }.get(status_raw.upper(), status_raw)
+
+        pipeline_link = (ex.get("_links") or {}).get("http://ns.adobe.com/adobecloud/rel/pipeline") or {}
+        pipeline_id = str((pipeline_link.get("href") or "").split("/pipeline/")[-1].split("/")[0])
+        pipeline_name = ex.get("pipelineExecution", {}).get("pipelineName", "") or f"Pipeline {pipeline_id}"
+
+        started_at = ex.get("createdAt") or ex.get("startedAt") or ""
+        finished_at = ex.get("finishedAt") or ""
+        duration_min = 0
+        try:
+            if started_at and finished_at:
+                from datetime import datetime
+                _s = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                _e = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+                duration_min = round((_e - _s).total_seconds() / 60, 1)
+        except Exception:
+            pass
+
+        rows.append({
+            "executionId": eid,
+            "Status": status,
+            "Deploy Start Time": started_at[:16].replace("T", " ") if started_at else "",
+            "pipelineId": pipeline_id,
+            "pipelineName": pipeline_name,
+            "Duration (Min)": duration_min,
+            "firstFailedStep": "",  # filled in separately if needed
+        })
+
+    df = _pd.DataFrame(rows) if rows else _pd.DataFrame(
+        columns=["executionId", "Status", "Deploy Start Time", "pipelineId",
+                 "pipelineName", "Duration (Min)", "firstFailedStep"])
+    # Sort newest first
+    if not df.empty and "Deploy Start Time" in df.columns:
+        df = df.sort_values("Deploy Start Time", ascending=False).reset_index(drop=True)
+    return df
+
+
 def get_execution(
     program_id: str,
     pipeline_id: str,

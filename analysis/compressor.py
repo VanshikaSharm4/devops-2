@@ -183,7 +183,45 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
         and len(changed_files) > 0
         and not _is_subtree
     )
-    if _is_submodule_pointer_only:
+
+    # Reactor module enable/disable — NOT low risk.
+    # When a module moves from commented-out to active in the reactor pom.xml,
+    # CM now compiles its code including ui.frontend. This can fail with build errors
+    # (npm/webpack issues, missing polyfills, Java errors) that were never caught
+    # because the module wasn't being built before.
+    # Detect by scanning the diff for lines that add/remove module references in pom.xml.
+    _reactor_module_changed = False
+    if _is_submodule_pointer_only and diff:
+        import re as _re_reactor
+        # Lines added (+) or removed (-) that reference <module> in pom.xml context
+        _added_modules   = _re_reactor.findall(r'^\+\s*<module>([^<]+)</module>', diff, _re_reactor.MULTILINE)
+        _removed_modules = _re_reactor.findall(r'^-\s*<module>([^<]+)</module>', diff, _re_reactor.MULTILINE)
+        # Also catch commented-out → uncommented pattern:
+        # -  <!--<module>foo</module>-->  →  +  <module>foo</module>
+        _uncommented = _re_reactor.findall(r'^\+\s*<module>([^<]+)</module>', diff, _re_reactor.MULTILINE)
+        _commented_out = _re_reactor.findall(r'^-\s*<!--\s*<module>', diff, _re_reactor.MULTILINE)
+        if _added_modules or _removed_modules or _uncommented or _commented_out:
+            _reactor_module_changed = True
+            commit_profile_dict["reactor_modules_changed"] = {
+                "enabled":  _added_modules[:10],
+                "disabled": _removed_modules[:10],
+            }
+
+    if _is_submodule_pointer_only and _reactor_module_changed:
+        # Reactor module enable/disable — override low-risk assumption.
+        # Enabling a module means its code is now compiled: ui.frontend npm build,
+        # Java compilation, surefire tests — any of which can fail.
+        commit_profile_dict["is_reactor_module_change"] = True
+        commit_profile_dict["build_risk_override"] = (
+            "MEDIUM — reactor module list changed in pom.xml (module enabled or disabled). "
+            "When a module is added to the reactor, CM compiles its ui.frontend (npm run build) "
+            "and Java sources. This can fail with: webpack/polyfill errors (Node.js built-ins like "
+            "'crypto' not available in webpack 5), missing npm dependencies, or Java compile errors "
+            "that were never caught while the module was skipped. "
+            "Do NOT use LOW override for reactor module changes — the parent does compile new code. "
+            "Set build to MEDIUM and check the enabled module's ui.frontend for npm issues."
+        )
+    elif _is_submodule_pointer_only:
         commit_profile_dict["is_submodule_pointer_only"] = True
         # Check if structural_findings already found service/test issues in submodule scan
         _structural_findings = bundle_dict.get("structural_findings") or []
@@ -255,6 +293,10 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
     error_details = bundle_dict.get("error_details") or []
     try:
         all_classified = classify_error_details(error_details)
+        # Deduplicate correlated failures before scoring — prevents double-counting
+        # when the same root cause (e.g. CRXDE active) appears at multiple steps.
+        from analysis.failure_classifier import deduplicate_correlated_failures
+        all_classified = deduplicate_correlated_failures(all_classified)
         high_signal = filter_high_signal_failures(all_classified, min_weight=0.5)
         infra_noise = [c for c in all_classified if c["signal_weight"] < 0.5]
 

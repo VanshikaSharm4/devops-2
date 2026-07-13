@@ -21,9 +21,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-REPO_DIR = os.getenv("GIT_LOCAL_DIR", "/Users/vanshika/Downloads/idfc")
+# REPO_DIR is resolved at call time (not import time) so multi-customer works correctly
+def _repo_dir() -> str:
+    return _get_ctx("git_local_dir", "GIT_LOCAL_DIR")
 
 # ── Helpers ──────────────────────────────────────────────────
+
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
 
 def _read(path: str) -> str:
     try:
@@ -32,8 +44,9 @@ def _read(path: str) -> str:
         return ""
 
 
-def _find_files(pattern: str, root: str = REPO_DIR) -> List[str]:
+def _find_files(pattern: str, root: str = "") -> List[str]:
     """Return all files matching a glob pattern under root."""
+    root = root or _repo_dir()
     return [str(p) for p in Path(root).rglob(pattern)
             if ".git" not in str(p)]
 
@@ -50,7 +63,7 @@ def _grep(text: str, pattern: str, flags: int = re.IGNORECASE) -> List[Dict]:
 def _rel(path: str) -> str:
     """Return path relative to REPO_DIR for clean display."""
     try:
-        return str(Path(path).relative_to(REPO_DIR))
+        return str(Path(path).relative_to(_repo_dir()))
     except ValueError:
         return path
 
@@ -551,7 +564,7 @@ def run_scan(use_llm: bool = True) -> tuple:
 
     # Attach code snippets to each finding — LLM sees real code, not just paths
     for r in risks:
-        file_abs = str(Path(REPO_DIR) / r["file"]) if not Path(r["file"]).is_absolute() else r["file"]
+        file_abs = str(Path(_repo_dir()) / r["file"]) if not Path(r["file"]).is_absolute() else r["file"]
         line_no  = r.get("line_no")
         if line_no and Path(file_abs).exists():
             content      = _read(file_abs)

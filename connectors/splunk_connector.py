@@ -18,7 +18,7 @@ BASE_URL   = "https://splunk-api.or1.adobe.net"
 EXPORT_URL = f"{BASE_URL}/servicesNS/admin/TA-AMS_ui/search/jobs/export"
 INDEX      = "ams_linux-os"
 SOURCETYPE = "ssg-summit-prod"
-EARLIEST   = os.getenv("SPLUNK_EARLIEST", "-30d")
+EARLIEST   = os.getenv("SPLUNK_EARLIEST", "-14d")  # 14 days — 30d caused 300s timeouts
 LATEST     = "now"
 
 
@@ -30,7 +30,7 @@ def _auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(username, password)
 
 
-def _stream_query(spl: str, earliest: str = EARLIEST, timeout: int = 300) -> pd.DataFrame:
+def _stream_query(spl: str, earliest: str = EARLIEST, timeout: int = 120) -> pd.DataFrame:
     """
     Run a Splunk search via the streaming export endpoint.
     Results arrive as newline-delimited JSON — no polling needed.

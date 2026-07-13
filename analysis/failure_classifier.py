@@ -43,24 +43,33 @@ def classify_failure(
     et = error_type or ""
     st = step or ""
 
-    # Rule 1 — CRXDE/DavEx type issues repeat every run regardless of code
-    if et in ("security_failure", "osgi_error") and occurrence_count >= 3:
+    # Rule 1 — Environment security issues (CRXDE/DavEx active, dispatcher misconfigured).
+    # Only infra when on securityTest step — a security_failure on build is code-caused.
+    # Require count >= 3 to distinguish env noise from a commit that broke security config.
+    if et in ("security_failure", "osgi_error") and occurrence_count >= 3 and st == "securityTest":
         return "infra_failure"
 
-    # Rule 2 — missing npm / compile errors → dependency issue
-    if et in ("missing_npm_module", "java_compile_error", "typescript_error"):
+    # Rule 2 — Java compile errors are code regressions, not dependency issues.
+    # Missing npm modules and TypeScript errors are dependency/configuration issues.
+    if et == "java_compile_error":
+        return "code_regression"
+    if et in ("missing_npm_module", "typescript_error"):
         return "dependency_issue"
 
     # Rule 3 — config / env issues
     if et in ("apache_config_syntax_error", "missing_env_variable"):
         return "config_issue"
 
-    # Rule 4 — repeated build failures with same error = environment issue
-    if et in ("build_failure",) and occurrence_count >= 5:
-        return "flaky_test"
+    # Rule 4 — repeated build_failure with same error.
+    # Previously classified as flaky_test which down-weighted real build failures.
+    # A build that fails 5+ times is a persistent code or infra issue — not flaky.
+    # Classify as infra_failure (weight 0.1) only if on a non-build step (env issue).
+    # On build step: still code_regression — someone needs to fix it.
+    if et == "build_failure" and occurrence_count >= 5 and st != "build":
+        return "infra_failure"
 
     # Rule 5 — code regression (build-time failures)
-    if et in ("build_failure", "java_compile_error"):
+    if et in ("build_failure",):
         return "code_regression"
 
     # Rule 6 — deploy step failures
@@ -127,6 +136,34 @@ def classify_error_details(error_details: List[Any]) -> List[Dict]:
         })
 
     return classified
+
+
+def deduplicate_correlated_failures(classified: List[Dict]) -> List[Dict]:
+    """
+    Remove correlated failures that share the same root error_type across steps.
+
+    Problem with linear aggregation: if securityTest fails 15 times AND deploy
+    fails 12 times with the same `security_failure` error type (both caused by
+    CRXDE being active), the scorer counts two independent signals and inflates
+    the risk. They're one problem showing at two steps.
+
+    Rule: for each error_type, keep only the highest-weight classification.
+    This prevents double-counting correlated failures while preserving genuinely
+    independent failures (different error types at different steps).
+
+    Also caps the effective signal of any single error type: a pipeline with
+    100 security_failures gives no more evidence than one with 10, because
+    they're the same recurring issue. Cap occurrence_count at 10 for weight purposes.
+    """
+    seen: Dict[str, Dict] = {}
+    for c in classified:
+        et = c["error_type"]
+        # Cap occurrence count so high-frequency recurring issues don't dominate
+        capped = dict(c)
+        capped["occurrence_count"] = min(c.get("occurrence_count", 1), 10)
+        if et not in seen or capped["signal_weight"] > seen[et]["signal_weight"]:
+            seen[et] = capped
+    return list(seen.values())
 
 
 def filter_high_signal_failures(

@@ -29,10 +29,14 @@ _checked_this_tick: dict = {}  # {repo_dir: timestamp}  — cleared every 30s
 _TICK_WINDOW_S = 30
 
 
-# ── Config from .env ─────────────────────────────────────────
+# ── Config — use customer_context (thread-safe) with os.environ fallback ──────
 
 def _repo_url() -> str:
-    url = os.getenv("CM_GIT_REPO_URL", "")
+    try:
+        from analysis.customer_context import get_git_url
+        url = get_git_url()
+    except Exception:
+        url = os.getenv("CM_GIT_REPO_URL", "")
     if not url:
         raise ValueError("CM_GIT_REPO_URL must be set in .env  (e.g. https://git.cloudmanager.adobe.com/idfc/idfc/)")
     return url
@@ -41,13 +45,22 @@ def _repo_url() -> str:
 def _local_dir(override: Optional[str] = None) -> str:
     if override:
         return override
-    return os.getenv("GIT_LOCAL_DIR", "")
+    try:
+        from analysis.customer_context import get_git_local_dir
+        return get_git_local_dir()
+    except Exception:
+        return os.getenv("GIT_LOCAL_DIR", "")
 
 
 def _auth_url() -> str:
     """Inject credentials into the clone URL."""
-    username = os.getenv("CM_GIT_USERNAME", "")
-    password = os.getenv("CM_GIT_PASSWORD", "")
+    try:
+        from analysis.customer_context import get_git_username, get_git_password
+        username = get_git_username()
+        password = get_git_password()
+    except Exception:
+        username = os.getenv("CM_GIT_USERNAME", "")
+        password = os.getenv("CM_GIT_PASSWORD", "")
     url = _repo_url()
     if username and password:
         return url.replace(
@@ -202,7 +215,11 @@ def clone_or_update() -> str:
         branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
 
         # If HEAD is detached or on wrong branch, use the customer's configured branch
-        configured_branch = os.getenv("GIT_BRANCH", "").strip()
+        try:
+            from analysis.customer_context import get_git_branch
+            configured_branch = get_git_branch().strip()
+        except Exception:
+            configured_branch = os.getenv("GIT_BRANCH", "").strip()
         target_branch = branch or configured_branch
 
         if target_branch:
@@ -736,13 +753,33 @@ def correlate_executions_to_commits(
         if exec_utc is None:
             continue
 
-        # Walk newest-first; stop at first commit whose timestamp <= exec start
+        # Walk newest-first; stop at first NON-BOT commit whose timestamp <= exec start.
+        # Jenkins CI commits ("Updated pom.xml file as per build parameters", "Tagging version")
+        # land AFTER the developer commit but BEFORE the execution trigger.
+        # Without this filter, timestamp correlation returns the bot commit instead of
+        # the actual developer commit — causing wrong SHA shown to the developer.
+        _bot_patterns = (
+            "updated pom.xml file as per build parameters",
+            "tagging version", "bump version", "jenkins cicd",
+            "automated commit", "[ci skip]", "[skip ci]",
+        )
+        def _is_bot_commit(c: dict) -> bool:
+            title  = (c.get("title", "") or "").lower()
+            author = (c.get("author", "") or "").lower()
+            return (
+                any(p in title for p in _bot_patterns)
+                or "jenkins" in author or "cicd" in author or "bot@" in author
+            )
+
         matched = None
         for i, c_utc in enumerate(commit_utc):
             if c_utc is None:
                 continue
             if c_utc <= exec_utc:
-                matched = commits[i]
+                c = commits[i]
+                if _is_bot_commit(c):
+                    continue  # skip CI bot commits — they obscure the real developer commit
+                matched = c
                 break
 
         if matched:

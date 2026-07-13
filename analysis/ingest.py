@@ -22,6 +22,16 @@ from parsers.log_parser import parse_log
 from analysis.paths import cache_dir, splunk_exports_dir
 
 
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
+
 def _pipeline_csv() -> str:
     return str(splunk_exports_dir() / "pipelines-list.csv")
 
@@ -40,7 +50,7 @@ CACHE_TTL_MIN = int(os.getenv("SPLUNK_CACHE_TTL_MINUTES", "30"))
 
 
 def _cache_file(program_id: Optional[int] = None) -> Path:
-    pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
+    pid = program_id or int(_get_ctx("program_id", "PROGRAM_ID"))
     return CACHE_DIR / f"splunk_cache_{pid}.pkl"
 
 
@@ -178,7 +188,7 @@ def load_live_data(
         fetch_share_names,
     )
 
-    pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
+    pid = program_id or int(_get_ctx("program_id", "PROGRAM_ID"))
 
     # Submit pipeline + failed steps in parallel.
     # Azure share names are optional — skip during risk assessment to save time.
@@ -247,7 +257,7 @@ def load_data(
     refresh in background. Developer sees results instantly; fresh data on
     next assessment.
     """
-    pid = program_id or int(os.getenv("PROGRAM_ID", "19905"))
+    pid = program_id or int(_get_ctx("program_id", "PROGRAM_ID"))
 
     if not force_csv and _use_splunk_api():
         if not force_refresh and _cache_is_fresh(pid):
@@ -373,7 +383,12 @@ def build_execution_summary(pipeline_df: pd.DataFrame) -> ExecutionSummary:
     finished = len(pipeline_df[pipeline_df["Status"] == "FINISHED"])
     failed = len(pipeline_df[pipeline_df["Status"].isin(["FAILED", "ERROR"])])
     cancelled = len(pipeline_df[pipeline_df["Status"] == "CANCELLED"])
-    rate = round(finished / total * 100, 1) if total else 0.0
+    # Success rate excludes CANCELLED — user-triggered cancellations are not failures.
+    # Including them deflates the rate: IDFC showed 7.7% success because most were
+    # cancelled retriggers, not genuine pipeline failures. This caused every commit
+    # to score as "historically unstable" → always REVIEW BEFORE PROMOTING.
+    _non_cancelled = total - cancelled
+    rate = round(finished / _non_cancelled * 100, 1) if _non_cancelled else 0.0
     return ExecutionSummary(
         total_executions=total,
         finished=finished,
@@ -391,7 +406,7 @@ def build_base_bundle(
     """Build AnalysisBundle — uses live Splunk API when credentials available, else CSVs."""
     from analysis.failure_history import build_failure_history
 
-    pid = os.getenv("PROGRAM_ID", "")
+    pid = _get_ctx("program_id", "PROGRAM_ID")
     pipeline_df, failed_df, _, share_map = load_data(
         program_id=int(pid) if pid else None,
         force_csv=force_csv,
@@ -408,8 +423,8 @@ def build_base_bundle(
         history = build_failure_history(failed_df, patterns, error_details, pipeline_df)
 
     bundle = AnalysisBundle(
-        program_id=os.getenv("PROGRAM_ID", "19905"),
-        repo=os.getenv("CM_GIT_REPO_URL", ""),
+        program_id=_get_ctx("program_id", "PROGRAM_ID"),
+        repo=_get_ctx("git_url", "CM_GIT_REPO_URL"),
         window_days=30,
         execution_summary=summary,
         failure_patterns=patterns,

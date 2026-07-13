@@ -13,13 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
+from dashboard.argus_home import render_argus_home
+
 st.set_page_config(
     page_title="DevOps Intelligence Platform",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-_TOPBAR_HEIGHT_PX = 60
+_TOPBAR_HEIGHT_PX = 64
 _TOPBAR_HEIGHT_CSS = f"{_TOPBAR_HEIGHT_PX}px"
 
 # ── Customer registry — loaded from data/customer_config.json ─────────────────
@@ -170,11 +172,16 @@ _tenant_ctx = _TenantContext.from_customer_dict(
 # Store in session state so analysis calls can access it without re-reading env
 st.session_state["_tenant_ctx"] = _tenant_ctx
 
-# Apply to env ONLY for this Streamlit rerun — subsequent reruns will re-apply
-# their own session's customer, overwriting this. This is safe for single-user
-# but still has a brief race window for concurrent multi-user on same process.
-# Full fix requires async workers (Phase 1) — this is the Phase 0 improvement.
+# Apply to os.environ for backward compat (legacy code that still reads it directly)
 _tenant_ctx.apply_to_env()
+
+# Set thread-safe ContextVar values — zero-race alternative to os.environ
+# Each Streamlit session gets its own isolated context snapshot via copy_context()
+try:
+    from analysis.customer_context import set_customer_context as _set_ctx
+    _set_ctx(_active_customer)
+except Exception:
+    pass
 
 # ── Theme tokens ──────────────────────────────────────────────────────────────
 # This is a Streamlit application, so Tailwind utility classes are unavailable.
@@ -185,11 +192,11 @@ if "ui_theme" not in st.session_state:
 
 _THEMES = {
     "light": {
-        "sidebar_bg": "#FFFFFF", "sidebar_border": "#E5E7EB",
+        "sidebar_bg": "#F8FAFC", "sidebar_border": "#E5E7EB",
         "sidebar_nav_hover": "#F8FAFC", "sidebar_nav_active": "#EFF6FF",
         "sidebar_accent": "#2563EB", "sidebar_text": "#4B5563",
         "sidebar_text_dim": "#6B7280", "sidebar_text_hi": "#111827",
-        "bg": "#F6F8FB", "surface": "#FFFFFF", "surface2": "#F8FAFC",
+        "bg": "#FFFFFF", "surface": "#FFFFFF", "surface2": "#F8FAFC",
         "border": "#E5E7EB", "border2": "#F1F5F9",
         "text": "#111827", "text_sub": "#4B5563", "text_muted": "#6B7280",
         "red": "#B91C1C", "amber": "#C98900", "green": "#16A34A",
@@ -199,27 +206,149 @@ _THEMES = {
     "dark": {
         "sidebar_bg": "#0F172A", "sidebar_border": "#263244",
         "sidebar_nav_hover": "#111827", "sidebar_nav_active": "#172554",
-        "sidebar_accent": "#60A5FA", "sidebar_text": "#CBD5E1",
-        "sidebar_text_dim": "#94A3B8", "sidebar_text_hi": "#F8FAFC",
+        "sidebar_accent": "#60A5FA", "sidebar_text": "#FFFFFF",
+        "sidebar_text_dim": "#FFFFFF", "sidebar_text_hi": "#FFFFFF",
         "bg": "#0B1120", "surface": "#111827", "surface2": "#0B1220",
         "border": "#263244", "border2": "#1E293B",
-        "text": "#F8FAFC", "text_sub": "#CBD5E1", "text_muted": "#94A3B8",
+        "text": "#FFFFFF", "text_sub": "#FFFFFF", "text_muted": "#F1F5F9",
         "red": "#FCA5A5", "amber": "#FCD34D", "green": "#86EFAC",
-        "blue": "#93C5FD", "purple": "#C4B5FD", "gray": "#94A3B8",
+        "blue": "#93C5FD", "purple": "#C4B5FD", "gray": "#E2E8F0",
         "shadow": "0 0.5rem 1.5rem rgba(0, 0, 0, 0.24)",
     },
 }
 T = _THEMES[st.session_state["ui_theme"]]
 T["chart"] = [T["blue"], T["red"], T["amber"], T["green"], T["purple"], T["gray"]]
+_IS_DARK = st.session_state["ui_theme"] == "dark"
+
+_DARK_MODE_CSS = ""
+if _IS_DARK:
+    _DARK_MODE_CSS = f"""
+/* ── Dark mode readability overrides ── */
+[data-testid="stSidebar"] {{
+    background-color: {T['sidebar_bg']} !important;
+}}
+[data-testid="stSidebar"] .stButton:first-of-type > button,
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] .stButton > button:hover,
+[data-testid="stSidebar"] [data-testid="baseButton-primary"] {{
+    color: {T['text']} !important;
+}}
+[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] td,
+[data-testid="stDataFrame"] [data-testid="stDataFrameCell"],
+[data-testid="stDataFrame"] [data-testid="stDataFrameRow"] *,
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] summary:hover,
+.id-chip,
+[data-testid="stMain"] code.id-chip {{
+    color: {T['text']} !important;
+    -webkit-text-fill-color: {T['text']} !important;
+    background: {T['surface2']} !important;
+    border-color: {T['border']} !important;
+}}
+[data-testid="stDataFrame"] th,
+[data-testid="stDataFrame"] td {{
+    color: {T['text']} !important;
+    -webkit-text-fill-color: {T['text']} !important;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-executions-table-marker) [data-testid="stButton"] > button,
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-commits-table-marker) [data-testid="stButton"] > button {{
+    color: {T['text']} !important;
+    -webkit-text-fill-color: {T['text']} !important;
+}}
+[data-testid="stTextInput"] input,
+[data-testid="stTextInput"] [data-baseweb="input"],
+[data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-testid="stSelectbox"] > div > div,
+[data-testid="stSelectbox"] [data-baseweb="select"] {{
+    background: {T['surface']} !important;
+    border-color: {T['border']} !important;
+    color: {T['text']} !important;
+    -webkit-text-fill-color: {T['text']} !important;
+    caret-color: {T['text']} !important;
+}}
+[data-testid="stSelectbox"] [data-baseweb="select"] span,
+[data-testid="stSelectbox"] [data-baseweb="select"] div[role="button"] {{
+    color: {T['text']} !important;
+    -webkit-text-fill-color: {T['text']} !important;
+}}
+[data-testid="stTextInput"] input::placeholder,
+[data-testid="stTextInput"] [data-baseweb="input"]::placeholder,
+[data-testid="stTextArea"] textarea::placeholder {{
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
+}}
+:root {{
+    --cm-bg: {T['bg']};
+    --cm-surface: {T['surface2']};
+    --cm-border: {T['border']};
+    --cm-text: {T['text']};
+    --cm-text-muted: {T['text_muted']};
+}}
+.cm-section {{
+    background: {T['surface']} !important;
+    border-color: {T['border']} !important;
+}}
+.cm-section-title,
+.cm-section-help {{
+    color: {T['text']} !important;
+    background: {T['surface2']} !important;
+    border-color: {T['border']} !important;
+}}
+.risk-execution-header {{
+    color: {T['text']} !important;
+}}
+.argus-page,
+.argus-page .hero-title,
+.argus-page .hero-subtitle,
+.argus-page .section-title,
+.argus-page .link-title,
+.argus-page .external-icon,
+.argus-page .hero-copy,
+.argus-page .link-desc {{
+    color: {T['text']} !important;
+}}
+.argus-page .hero-card,
+.argus-page .link-card {{
+    background: {T['surface']} !important;
+    border-color: {T['border']} !important;
+}}
+.pg-sub,
+.sec-label,
+.caption,
+.risk-workspace-help,
+.risk-customer-label {{
+    color: {T['text']} !important;
+}}
+.ra-ui-card {{
+    background-color: {T['surface']} !important;
+    box-shadow: {T['shadow']} !important;
+}}
+.ra-ui-title-text,
+.ra-ui-data .ra-ui-headline,
+.ra-ui-details p,
+.ra-ui-details .ra-ui-finding,
+.ra-ui-details .ra-ui-section-label {{
+    color: {T['text']} !important;
+}}
+"""
 
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+{_DARK_MODE_CSS}
 
 /* ─────────────────────────────────────────
    RESET & BASE
 ───────────────────────────────────────── */
 *, *::before, *::after {{ box-sizing: border-box; }}
+:root {{
+    --space-1: 8px;
+    --space-2: 16px;
+    --space-3: 24px;
+    --space-4: 32px;
+}}
 html, body, [class*="css"] {{
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     -webkit-font-smoothing: antialiased;
@@ -234,8 +363,8 @@ html, body, [class*="css"] {{
     color: {T['text']} !important;
 }}
 .block-container {{
-    padding: 1.25rem 2rem 1.5rem !important;
-    max-width: 1440px !important;
+    padding: 8px 32px 32px !important;
+    max-width: 1600px !important;
 }}
 [data-testid="stMain"] {{
     overflow-y: auto !important;
@@ -252,13 +381,13 @@ html, body, [class*="css"] {{
     max-height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
 }}
 [data-testid="stMain"] [data-testid="stVerticalBlock"] {{
-    gap: 0.35rem !important;
+    gap: var(--space-1) !important;
 }}
 [data-testid="stMain"] [data-testid="stElementContainer"] {{
-    margin-bottom: 0.25rem !important;
+    margin-bottom: var(--space-1) !important;
 }}
 [data-testid="stMain"] [data-testid="stHorizontalBlock"] {{
-    gap: 0.65rem !important;
+    gap: var(--space-2) !important;
 }}
 
 /* ── Hide Streamlit chrome ── */
@@ -280,10 +409,7 @@ html, body, [class*="css"] {{
     opacity: 1 !important;
     pointer-events: auto !important;
     background-color: #FAFAFA !important;
-    border-right: 1px solid #EBEBEB !important;
-    border-left: none !important;
-    border-top: none !important;
-    border-bottom: none !important;
+    border: none !important;
     position: sticky !important;
     top: {_TOPBAR_HEIGHT_CSS} !important;
     height: calc(100vh - {_TOPBAR_HEIGHT_CSS}) !important;
@@ -531,15 +657,15 @@ iframe[style*="height: 0"] {{
 }}
 
 /* ─────────────────────────────────────────
-   METRIC CARDS — flat, no borders
+   METRIC CARDS
 ───────────────────────────────────────── */
 [data-testid="metric-container"],
 [data-testid="stMetric"] {{
-    background: #F5F5F5 !important;
-    border: none !important;
-    border-radius: 4px !important;
-    padding: 1rem 1.1rem !important;
-    box-shadow: none !important;
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 14px !important;
+    padding: 24px !important;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
 }}
 [data-testid="stMetricLabel"] > div,
 [data-testid="stMetricLabel"] p {{
@@ -615,17 +741,17 @@ iframe[style*="height: 0"] {{
    TYPOGRAPHY SYSTEM
    ════════════════════════════════════ */
 .pg-title {{
-    font-size: 1.35rem;
-    font-weight: 700;
+    font-size: 1.75rem;
+    font-weight: 750;
     color: {T['text']};
     letter-spacing: -0.02em;
     line-height: 1.3;
     margin: 0;
 }}
 .pg-sub {{
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     color: {T['text_muted']};
-    margin-top: 0.2rem;
+    margin-top: 0.35rem;
     font-weight: 400;
 }}
 .sec-label {{
@@ -771,6 +897,11 @@ iframe[style*="height: 0"] {{
     -webkit-text-fill-color: {T['text_muted']} !important;
     opacity: 1 !important;
 }}
+[placeholder="e.g. 70190dfe144ba4e1d92972a329dea9d4f3f540eb"]::placeholder {{
+    color: #000000 !important;
+    -webkit-text-fill-color: #000000 !important;
+    opacity: 1 !important;
+}}
 [data-testid="stTextInput"] input:focus,
 [data-testid="stTextArea"] textarea:focus {{
     border-color: {T['blue']} !important;
@@ -908,15 +1039,14 @@ hr {{
     background-color: transparent !important;
 }}
 
-/* Content card containers — flat, top separator only */
+/* Content card containers */
 [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"][style*="border"] {{
-    background-color: transparent !important;
-    border: none !important;
-    border-top: 1px solid #EBEBEB !important;
-    border-radius: 0 !important;
-    padding: 0.85rem 0 !important;
-    margin-bottom: 0.5rem !important;
-    box-shadow: none !important;
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 14px !important;
+    padding: 24px !important;
+    margin-bottom: var(--space-3) !important;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
 }}
 
 /* HTML panel cards */
@@ -1085,10 +1215,10 @@ div[data-testid="stCode"] {{
 /* Metrics */
 [data-testid="stMain"] [data-testid="stMetric"],
 [data-testid="stMain"] [data-testid="metric-container"] {{
-    background: #F5F5F5 !important;
-    border: none !important;
-    border-radius: 4px !important;
-    box-shadow: none !important;
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 14px !important;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
 }}
 
 /* Sidebar: light text on dark background */
@@ -1100,6 +1230,11 @@ div[data-testid="stCode"] {{
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p[style*="505060"],
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p[style*="sidebar_text_dim"] {{
     color: {T['sidebar_text_dim']} !important;
+}}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] .sidebar-cache-status {{
+    color: {T['sidebar_text_dim']} !important;
+    font-size: 0.625rem !important;
+    opacity: 0.72;
 }}
 
 /* Plotly chart containers — no extra white tray or excess height */
@@ -1264,6 +1399,7 @@ div[data-testid="stDataFrame"] [class*="gdg"] {{
 .ra-ui-title {{
     display: flex;
     align-items: center;
+    gap: 0.5rem;
 }}
 .ra-ui-title span {{
     position: relative;
@@ -1291,9 +1427,11 @@ div[data-testid="stDataFrame"] [class*="gdg"] {{
 }}
 .ra-ui-percent {{
     margin: 0 0 0 0.5rem;
-    font-weight: 600;
+    font-weight: 400;
+    font-size: 0.62rem;
     display: flex;
     white-space: nowrap;
+    opacity: 0.75;
 }}
 .ra-ui-data {{
     display: flex;
@@ -1462,13 +1600,13 @@ st.markdown(f"""
     color: var(--text) !important;
 }}
 .block-container {{
-    max-width: 96rem !important;
+    max-width: 1600px !important;
     margin-inline: auto !important;
-    padding: clamp(1rem, 2vw, 2rem) !important;
+    padding: 8px 32px 32px !important;
 }}
 [data-testid="stSidebar"] {{
     background: var(--sidebar-bg) !important;
-    border-right-color: var(--border) !important;
+    border: none !important;
 }}
 [data-testid="stSidebar"] .stButton > button,
 [data-testid="stSidebar"] button[kind="secondary"],
@@ -1598,6 +1736,20 @@ st.markdown(f"""
     box-shadow: none !important;
     padding: 0 !important;
 }}
+
+/* Overview chart cards */
+.overview-card-marker {{
+    display: none;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.overview-card-marker) {{
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 14px !important;
+    padding: 24px !important;
+    min-height: 200px !important;
+    margin-bottom: var(--space-3) !important;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
+}}
 .risk-workspace-help {{
     color: #6E6E6E;
     font-size: 12.5px;
@@ -1640,6 +1792,10 @@ st.markdown(f"""
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+}}
+/* Hide the legacy standalone risk-level label immediately before the verdict. */
+[data-testid="stElementContainer"]:has(+ [data-testid="stElementContainer"] .risk-verdict-banner) {{
+    display: none !important;
 }}
 .risk-workspace {{
     background: var(--panel-bg);
@@ -1753,6 +1909,34 @@ st.markdown(f"""
     padding: 0 1rem 1rem;
     max-width: 32rem;
 }}
+.risk-executions-table-marker,
+.risk-commits-table-marker {{
+    display: none;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-executions-table-marker),
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-commits-table-marker) {{
+    padding: 24px !important;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-executions-table-marker) [data-testid="stButton"] > button,
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-commits-table-marker) [data-testid="stButton"] > button {{
+    min-height: 72px !important;
+    height: 72px !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    color: var(--text) !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-executions-table-marker) [data-testid="stButton"] > button:hover,
+[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-commits-table-marker) [data-testid="stButton"] > button:hover {{
+    background: #F8FAFC !important;
+}}
 [data-testid="stMain"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {{
     background: var(--panel-bg) !important;
     border-color: var(--border) !important;
@@ -1816,6 +2000,48 @@ def section_label(text: str, *, dark: bool = False) -> None:
     )
 
 
+def format_duration_hm(minutes: object) -> str:
+    """Convert minute values to a readable hours/minutes string."""
+    try:
+        total_minutes = int(float(minutes))
+    except (TypeError, ValueError):
+        return "—"
+
+    if total_minutes <= 0:
+        return "—"
+
+    hours, mins = divmod(total_minutes, 60)
+    if hours and mins:
+        return f"{hours}h {mins}m"
+    if hours:
+        return f"{hours}h"
+    return f"{mins}m"
+
+
+def overview_section_title(text: str) -> None:
+    st.markdown(
+        f'<p style="font-size:0.82rem;font-weight:650;color:{T["text"]};'
+        f'margin:0 0 0.7rem 0">{text}</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def overview_kpi_icon(kind: str, color: str) -> str:
+    paths = {
+        "activity": '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+        "check": '<path d="m5 12 4 4L19 6"/>',
+        "warning": '<path d="M12 4 3.8 19h16.4L12 4Z"/><path d="M12 9v4m0 3h.01"/>',
+        "close": '<path d="m7 7 10 10M17 7 7 17"/>',
+        "analytics": '<path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/>',
+    }
+    return (
+        f'<span style="width:30px;height:30px;border-radius:8px;display:inline-flex;'
+        f'align-items:center;justify-content:center;background:{color}12;color:{color}">'
+        f'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" '
+        f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths[kind]}</svg></span>'
+    )
+
+
 def _ai_analyzing_loader_html(message: str = "") -> str:
     return (
         '<div id="risk-analysis-anchor" class="ai-analyze-loader">'
@@ -1836,40 +2062,41 @@ def ai_analyzing_loader(message: str):
     """Show bouncing-dots loader while AI risk analysis runs."""
     _slot = st.empty()
     _slot.markdown(_ai_analyzing_loader_html(message), unsafe_allow_html=True)
-    _scroll_to_risk_analysis_if_needed()
     try:
         yield
     finally:
         _slot.empty()
 
 
-def _scroll_to_risk_analysis_if_needed() -> None:
-    """Smooth-scroll to the analysis loader after a commit SHA is selected."""
+def _scroll_risk_page_bottom_if_needed() -> None:
+    """Smooth-scroll the main pane to the bottom after a risk table selection."""
     if not st.session_state.pop("risk_scroll_to_analysis", False):
         return
     import streamlit.components.v1 as components
     components.html(
         """<script>
-        (function scrollToAnalysis() {
-            const findAnchor = () => {
-                const roots = [window.parent.document];
-                try {
-                    for (const iframe of window.parent.document.querySelectorAll('iframe')) {
-                        if (iframe.contentDocument) roots.push(iframe.contentDocument);
-                    }
-                } catch (e) {}
-                for (const doc of roots) {
-                    const el = doc.getElementById('risk-analysis-anchor');
-                    if (el) return el;
+        (function scrollRiskPageToBottom() {
+            const parentDoc = window.parent.document;
+            const scrollBottom = () => {
+                const main = parentDoc.querySelector('[data-testid="stMain"]');
+                if (main) {
+                    main.scrollTo({ top: main.scrollHeight, behavior: 'smooth' });
+                    return;
                 }
-                return null;
+                const appView = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+                if (appView) {
+                    appView.scrollTo({ top: appView.scrollHeight, behavior: 'smooth' });
+                    return;
+                }
+                window.parent.scrollTo({ top: parentDoc.body.scrollHeight, behavior: 'smooth' });
             };
-            const el = findAnchor();
-            if (el) {
-                el.scrollIntoView({behavior: 'smooth', block: 'center'});
-                return;
-            }
-            setTimeout(scrollToAnalysis, 120);
+            scrollBottom();
+            let attempts = 0;
+            const timer = setInterval(() => {
+                scrollBottom();
+                attempts += 1;
+                if (attempts >= 12) clearInterval(timer);
+            }, 200);
         })();
         </script>""",
         height=0,
@@ -1916,6 +2143,12 @@ def _ra_card_icon_svg(kind: str) -> str:
     return icons.get(kind, icons["check"])
 
 
+def _strip_risk_finding_prefix(text: str) -> str:
+    """Remove [LOW]/[MEDIUM]/[HIGH]/[CERTAIN] prefix from finding text for display."""
+    import re
+    return re.sub(r"^\[(?:LOW|MEDIUM|HIGH|CERTAIN)\]\s*", "", (text or "").strip())
+
+
 def risk_summary_card_html(
     title: str,
     percent_label: str,
@@ -1927,6 +2160,10 @@ def risk_summary_card_html(
     compact: bool = False,
 ) -> str:
     _variant = "ra-ui-card-compact" if compact else "ra-ui-card-hero"
+    _percent_html = (
+        f'<p class="ra-ui-percent" style="color:{percent_color}">{percent_label}</p>'
+        if percent_label else ""
+    )
     return (
         f'<div class="ra-ui-card {_variant}">'
         f'<div class="ra-ui-title">'
@@ -1934,7 +2171,7 @@ def risk_summary_card_html(
         f'{_ra_card_icon_svg(icon_kind)}'
         f'</span>'
         f'<p class="ra-ui-title-text">{title}</p>'
-        f'<p class="ra-ui-percent" style="color:{percent_color}">{percent_label}</p>'
+        f'{_percent_html}'
         f'</div>'
         f'<div class="ra-ui-data">'
         f'<p class="ra-ui-headline">{headline}</p>'
@@ -1990,9 +2227,11 @@ def historical_matches_carousel_html(hits: list, tokens: dict) -> str:
 
 
 @contextmanager
-def content_card():
+def content_card(*, overview: bool = False):
     """Single bordered card — avoids empty white blocks from split <div class='panel'> tags."""
     with st.container(border=True):
+        if overview:
+            st.markdown('<span class="overview-card-marker"></span>', unsafe_allow_html=True)
         yield
 
 
@@ -2035,7 +2274,7 @@ def _html_table(df, show_cols: list, col_labels: dict) -> None:
     """Lightweight static HTML table — no JS overhead, renders instantly."""
     headers = "".join(
         f'<th style="font-size:0.67rem;font-weight:700;text-transform:uppercase;'
-        f'letter-spacing:0.08em;color:{T["text_muted"]};padding:0.5rem 0.85rem;'
+        f'letter-spacing:0.06em;color:{T["text_muted"]};padding:0.75rem 1rem;'
         f'background:{T["surface2"]};border-bottom:1px solid {T["border"]};'
         f'text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{col_labels.get(c, c)}</th>'
         for c in show_cols
@@ -2043,16 +2282,20 @@ def _html_table(df, show_cols: list, col_labels: dict) -> None:
     rows = ""
     for _, row in df.iterrows():
         cells = "".join(
-            f'<td style="font-size:0.81rem;color:{T["text"]};padding:0.45rem 0.85rem;'
+            f'<td style="font-size:0.81rem;color:{T["text"]};padding:0.78rem 1rem;'
             f'border-bottom:1px solid {T["border2"]};white-space:nowrap;'
             f'overflow:hidden;text-overflow:ellipsis;max-width:280px">'
             f'{str(row[c])[:90]}</td>'
             for c in show_cols
         )
-        rows += f'<tr style="background:{T["surface"]}">{cells}</tr>'
+        rows += f'<tr class="argus-data-row">{cells}</tr>'
     st.markdown(
-        f'<div style="overflow-x:auto;border:1px solid {T["border"]};'
-        f'border-radius:10px;margin-bottom:0.65rem">'
+        f'<style>'
+        f'.argus-data-table .argus-data-row:nth-child(even){{background:{T["surface2"]};}}'
+        f'.argus-data-table .argus-data-row:hover{{background:#F1F5F9;}}'
+        f'</style>'
+        f'<div class="argus-data-table" style="overflow-x:auto;border:1px solid {T["border2"]};'
+        f'border-radius:10px;margin-bottom:0.25rem">'
         f'<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
         f'<thead><tr>{headers}</tr></thead>'
         f'<tbody>{rows}</tbody>'
@@ -2259,12 +2502,12 @@ def stat_bar(label: str, value: int, max_val: int, color: str) -> None:
     pct = int((value / max_val) * 100) if max_val else 0
     st.markdown(
         f'<div style="display:flex;align-items:center;gap:0.75rem;'
-        f'padding:0.45rem 0;border-bottom:1px solid {T["border2"]}">'
-        f'<span style="font-size:0.8rem;color:{T["text"]};width:110px;'
+        f'padding:0.65rem 0;border-bottom:1px solid {T["border2"]}">'
+        f'<span style="font-size:0.8rem;color:{T["text"]};width:130px;'
         f'flex-shrink:0;font-weight:500">{label}</span>'
-        f'<div style="flex:1;height:6px;background:{T["border"]};border-radius:3px">'
-        f'<div style="width:{pct}%;height:6px;background:{color};'
-        f'border-radius:3px;transition:width 0.3s"></div></div>'
+        f'<div style="flex:1;height:8px;background:{T["border2"]};border-radius:999px">'
+        f'<div style="width:{pct}%;height:8px;background:{color};'
+        f'border-radius:999px;transition:width 0.3s"></div></div>'
         f'<span style="font-size:0.8rem;font-weight:700;color:{T["text"]};'
         f'width:28px;text-align:right;flex-shrink:0">{value}</span>'
         f'</div>',
@@ -2323,7 +2566,8 @@ def _run_splunk_refresh_bg():
         from analysis.ingest import load_data, _save_cache
         _pid = int(os.getenv("PROGRAM_ID", "19905"))
         pipeline_df, failed_df, failed_steps_df, share_map = load_data(
-            program_id=_pid, force_refresh=True
+            program_id=_pid, force_refresh=True,
+            skip_share_names=False,  # Failure Pinpoint needs share names to fetch logs
         )
         _save_cache(pipeline_df, failed_df, failed_steps_df, share_map)
         _splunk_refresh_state["done"]  = True
@@ -2444,19 +2688,52 @@ def get_data_or_stop():
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 _PAGE_ICONS = {
+    "Argus Home":            ":material/home:",
     "Overview":              ":material/dashboard:",
-    "Failure Analysis":      ":material/report_problem:",
     "Risk Assessment":       ":material/security:",
-    "Failure Pinpoint":      ":material/my_location:",
+    "Post-Failure Diagnosis": ":material/my_location:",
+    "Failure Analysis":      ":material/report_problem:",
     "Memory Search":         ":material/search:",
     "Memory Explorer":       ":material/travel_explore:",
-    "Static Analysis":       ":material/code:",
     "Repo Settings":         ":material/settings:",
 }
-_PAGES = list(_PAGE_ICONS.keys())
+_PAGES = [
+    page_name
+    for page_name in _PAGE_ICONS
+    if page_name not in {"Argus Home", "Memory Search", "Static Analysis"}
+]
 
-if "page" not in st.session_state:
-    st.session_state["page"] = "Overview"
+_PAGE_ROUTES = {
+    "argus_home": "Argus Home",
+    "overview": "Overview",
+    "failure_analysis": "Failure Analysis",
+    "risk_assessment": "Risk Assessment",
+    "failure_pinpoint": "Post-Failure Diagnosis",
+    "memory_search": "Memory Search",
+    "memory_explorer": "Memory Explorer",
+    "static_analysis": "Static Analysis",
+    "repository_settings": "Repo Settings",
+}
+_ROUTE_FOR_PAGE = {page_name: route for route, page_name in _PAGE_ROUTES.items()}
+
+
+def _navigate_to(page_name: str) -> None:
+    """Persist a page selection in both session state and the shareable URL."""
+    st.session_state["page"] = page_name
+    route = _ROUTE_FOR_PAGE[page_name]
+    if st.query_params.get("page") != route:
+        st.query_params["page"] = route
+
+
+_requested_route = st.query_params.get("page")
+if _requested_route in _PAGE_ROUTES:
+    st.session_state["page"] = _PAGE_ROUTES[_requested_route]
+elif _requested_route is not None:
+    _navigate_to(_PAGE_ROUTES["argus_home"])
+elif "page" not in st.session_state:
+    st.session_state["page"] = _PAGE_ROUTES["argus_home"]
+if st.session_state.get("page") == "Failure Pinpoint":
+    st.session_state["page"] = "Post-Failure Diagnosis"
 if "sb_open" not in st.session_state:
     st.session_state["sb_open"] = True
 
@@ -2471,6 +2748,8 @@ def _render_top_navigation_bar() -> None:
     customers_list = list(_CUSTOMERS.keys())
     theme_name = st.session_state.get("ui_theme", "light")
     theme_colors = _THEMES[theme_name]
+    _cache_tooltip = "Refresh data"
+    _cache_col = theme_colors["green"]
 
     style_content = f"""
     .custom-top-bar {{
@@ -2480,8 +2759,8 @@ def _render_top_navigation_bar() -> None:
         right: 0;
         width: 100%;
         height: {_TOPBAR_HEIGHT_CSS};
-        background-color: {theme_colors["surface"]} !important;
-        border-bottom: 1px solid {theme_colors["border"]} !important;
+        background-color: {theme_colors["surface2"]} !important;
+        border: none !important;
         color: {theme_colors["text"]} !important;
         z-index: 99999;
         display: flex;
@@ -2490,21 +2769,23 @@ def _render_top_navigation_bar() -> None:
         padding: 0 16px;
         box-sizing: border-box;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        box-shadow: none;
     }}
 
     .top-bar-left, .top-bar-right {{
         display: flex;
         align-items: center;
-        gap: 16px;
+        gap: 20px;
     }}
 
     .hamburger-btn {{
         background: none;
         border: none;
         cursor: pointer;
+        width: 36px;
+        height: 36px;
         padding: 8px;
-        border-radius: 4px;
+        border-radius: 999px;
         color: {theme_colors["text_muted"]} !important;
         display: flex;
         align-items: center;
@@ -2700,11 +2981,13 @@ def _render_top_navigation_bar() -> None:
     }}
 
     .icon-nav-btn {{
-        background: none;
+        background: {theme_colors["surface2"]};
         border: none;
         cursor: pointer;
         padding: 8px;
-        border-radius: 4px;
+        width: 36px;
+        height: 36px;
+        border-radius: 999px;
         color: {theme_colors["text_muted"]} !important;
         display: flex;
         align-items: center;
@@ -2713,7 +2996,7 @@ def _render_top_navigation_bar() -> None:
     }}
 
     .icon-nav-btn:hover {{
-        background-color: {theme_colors["border2"]} !important;
+        background-color: {theme_colors["border"]} !important;
         color: {theme_colors["text"]} !important;
     }}
 
@@ -2799,6 +3082,14 @@ def _render_top_navigation_bar() -> None:
         background-color: {theme_colors["border2"]} !important;
         color: {theme_colors["text"]} !important;
     }}
+
+    @keyframes tb-spin {{
+        from {{ transform: rotate(0deg); }}
+        to   {{ transform: rotate(360deg); }}
+    }}
+    .tb-spinning svg {{
+        animation: tb-spin 0.8s linear infinite;
+    }}
     """
 
     html_content = f"""
@@ -2806,12 +3097,12 @@ def _render_top_navigation_bar() -> None:
         <button class="hamburger-btn" id="top-bar-hamburger" title="Toggle Sidebar">
             <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
         </button>
-        <div class="logo-container" id="top-bar-logo">
+        <a class="logo-container" id="top-bar-logo" href="?page=argus_home">
             <svg class="app-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
             <span class="app-name">Argus</span>
-        </div>
+        </a>
     </div>
     <div id="top-bar-right-section" class="top-bar-right">
         <div class="customer-selector-container" id="customer-selector-container">
@@ -2827,21 +3118,11 @@ def _render_top_navigation_bar() -> None:
                 <div class="customer-list-container" id="customer-list-container"></div>
             </div>
         </div>
-        <button class="icon-nav-btn" title="Notifications">
-            <svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 4.36 6 6.92 6 10v5l-2 2v1h16v-1l-2-2z"/></svg>
+        <button class="icon-nav-btn" id="topbar-refresh-btn"
+                title="{_cache_tooltip}" style="position:relative">
+            <span style="position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:{_cache_col}"></span>
+            <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>
-        <div class="user-profile-avatar" id="user-avatar-container">
-            <span>V</span>
-            <div class="account-dropdown-menu" id="account-dropdown">
-                <div class="account-info">
-                    <div style="font-weight: 600;">Vanshika Sharma</div>
-                    <div class="account-email">vanshika@example.com</div>
-                </div>
-                <div class="account-item">Profile Settings</div>
-                <div class="account-item">Experience Cloud Settings</div>
-                <div class="account-item" style="border-top: 1px solid {theme_colors["border2"]}; color: {theme_colors["red"]} !important;">Sign Out</div>
-            </div>
-        </div>
     </div>
     """
 
@@ -2979,7 +3260,7 @@ def _render_top_navigation_bar() -> None:
 
             const addItem = parentDoc.createElement('div');
             addItem.className = 'customer-item';
-            addItem.style.cssText = 'color:#1473E6;font-weight:500;gap:6px;display:flex;align-items:center';
+            addItem.style.cssText = 'color: #000000; font-weight:500; gap:6px; display:flex; align-items:center';
             addItem.textContent = '+ Add new customer';
             addItem.addEventListener('click', () => {{
                 closeDropdown();
@@ -2992,7 +3273,7 @@ def _render_top_navigation_bar() -> None:
                 if (!found) {{
                     try {{
                         const url = new URL(window.parent.location.href);
-                        url.searchParams.set('page', 'Repo Settings');
+                        url.searchParams.set('page', 'repository_settings');
                         window.parent.location.href = url.href;
                     }} catch(e) {{}}
                 }}
@@ -3131,7 +3412,53 @@ def _render_top_navigation_bar() -> None:
                 }}
             }};
         }}
+
+        // Use a native link for home navigation, preserving the customer query param.
+        const topbarLogo = parentDoc.getElementById('top-bar-logo');
+        if (topbarLogo) {{
+            try {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('page', 'argus_home');
+                topbarLogo.href = url.href;
+            }} catch(e) {{}}
+        }}
         
+        // ── Topbar refresh — click the existing sidebar button directly ──
+        function clickSidebarBtn(labelTexts) {{
+            const allBtns = parentDoc.querySelectorAll('button');
+            for (const btn of allBtns) {{
+                const t = (btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim();
+                if (labelTexts.some(l => t === l || t.includes(l))) {{
+                    clickSidebarStateToggle(btn);
+                    return true;
+                }}
+            }}
+            return false;
+        }}
+
+        const topbarRefreshBtn = parentDoc.getElementById('topbar-refresh-btn');
+        if (topbarRefreshBtn) {{
+            topbarRefreshBtn.onclick = (e) => {{
+                e.preventDefault();
+                e.stopPropagation();
+                closeDropdown();
+                // Find refresh button via its marker span — works open or collapsed
+                const marker = parentDoc.getElementById('sidebar-refresh-marker');
+                if (marker) {{
+                    const container = marker.closest('[data-testid="element-container"]')
+                                   || marker.parentElement;
+                    const prevContainer = container && container.previousElementSibling;
+                    const btn = prevContainer && prevContainer.querySelector('button');
+                    if (btn) {{ btn.click(); return; }}
+                }}
+                // Fallback: search by help text title
+                const allBtns = parentDoc.querySelectorAll('button[title="Refresh data"]');
+                if (allBtns.length > 0) {{ allBtns[0].click(); return; }}
+                // Last fallback: search by text
+                clickSidebarBtn(['Refresh']);
+            }};
+        }}
+
         // Account avatar dropdown toggle
         const avatar = parentDoc.getElementById('user-avatar-container');
         if (avatar) {{
@@ -3215,7 +3542,7 @@ def _toggle_sidebar_state() -> None:
 def _render_sidebar():
     _open = st.session_state.get("sb_open", True)
     _page = st.session_state.get("page", "Overview")
-    _w    = "220px" if _open else "56px"
+    _w    = "208px" if _open else "56px"
     _collapsed_css = """
 [data-testid="stSidebar"] .stButton > button,
 [data-testid="stSidebar"] button[kind="secondary"],
@@ -3321,18 +3648,15 @@ def _render_sidebar():
             help=_p,
             icon=_icon,
         ):
-            st.session_state["page"] = _p
+            _navigate_to(_p)
             st.rerun()
 
-    # ── Utilities ────────────────────────────────────────────────────────────
+    # ── Theme toggle ─────────────────────────────────────────────────────────
     _theme_label = "Dark mode" if st.session_state["ui_theme"] == "light" else "Light mode"
-    if st.button(
-        _theme_label if _open else " ",
-        key="_theme_switch",
-        use_container_width=True,
-        help=f"Switch to {_theme_label.lower()}",
-        icon=":material/dark_mode:" if st.session_state["ui_theme"] == "light" else ":material/light_mode:",
-    ):
+    if st.button(_theme_label, key="_theme_switch",
+                 help=f"Switch to {_theme_label.lower()}",
+                 icon=":material/dark_mode:" if st.session_state["ui_theme"] == "light" else ":material/light_mode:",
+                 use_container_width=True):
         st.session_state["ui_theme"] = "dark" if st.session_state["ui_theme"] == "light" else "light"
         st.rerun()
 
@@ -3348,7 +3672,7 @@ def _render_sidebar():
             _sc, _st2 = "#889098", "No cache"
         if _open:
             st.markdown(
-                f'<p style="font-size:0.6875rem;color:{_sc};padding:0 0.75rem;margin:0 0 0.25rem;white-space:nowrap;overflow:hidden">'
+                f'<p class="sidebar-cache-status" style="padding:0 0.75rem;margin:0 0 0.25rem;white-space:nowrap;overflow:hidden">'
                 f'<span style="display:inline-block;width:0.375rem;height:0.375rem;border-radius:9999px;'
                 f'background:{_sc};margin-right:0.25rem;vertical-align:middle"></span>{_st2}</p>',
                 unsafe_allow_html=True,
@@ -3364,15 +3688,10 @@ def _render_sidebar():
             st.cache_data.clear()
             st.cache_resource.clear()
             st.rerun()
+        # Hidden marker so topbar JS can find refresh button regardless of open/collapsed state
+        st.markdown('<span id="sidebar-refresh-marker"></span>', unsafe_allow_html=True)
     except Exception:
         pass
-
-    if _open:
-        st.markdown(
-            f'<p style="font-size:0.6875rem;color:{T["sidebar_text_dim"]};padding:0.75rem;margin:0;white-space:nowrap;overflow:hidden">'
-            f'DevOps release governance</p>',
-            unsafe_allow_html=True,
-        )
 
 
 _render_top_navigation_bar()
@@ -3381,12 +3700,18 @@ with st.sidebar:
     _render_sidebar()
 
 
-page = st.session_state.get("page", "Overview")
+page = st.session_state.get("page", _PAGE_ROUTES["argus_home"])
 
 # ═══════════════════════════════════════════════════════════
-# PAGE 1 — OVERVIEW
+# PAGE: ARGUS HOME
 # ═══════════════════════════════════════════════════════════
-if page == "Overview":
+if page == "Argus Home":
+    render_argus_home()
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: OVERVIEW
+# ═══════════════════════════════════════════════════════════
+elif page == "Overview":
     section_header("Pipeline Health Overview", "Last 30 days &middot; Live from Splunk")
 
     # Kick off background Splunk refresh (no-op if already fresh or running)
@@ -3395,11 +3720,11 @@ if page == "Overview":
     # Show background fetch status banner
     if _splunk_refresh_state["running"]:
         st.markdown(
-            f'<div style="display:flex;align-items:center;gap:10px;'
-            f'background:#F5F8FF;border:1px solid #C0D2FA;border-radius:6px;'
-            f'padding:8px 14px;margin-bottom:10px;font-size:12px;color:#1473E6">'
-            f'<span>⟳</span>'
-            f'&nbsp;<strong>Fetching fresh data from Splunk in background</strong> — '
+            f'<div style="display:flex;align-items:center;gap:6px;'
+            f'background:rgba(37,99,235,0.035);border:1px solid rgba(37,99,235,0.14);border-radius:6px;'
+            f'padding:5px 10px;margin-bottom:14px;font-size:11px;color:{T["text_sub"]}">'
+            f'<span style="color:{T["blue"]}">⟳</span>'
+            f'<strong style="font-weight:600">Fetching fresh data from Splunk in background</strong> — '
             f'showing cached data. Click Refresh Data in sidebar when done.'
             f'</div>',
             unsafe_allow_html=True,
@@ -3448,12 +3773,11 @@ if page == "Overview":
         )
     elif _data_source == "stale_cache":
         st.markdown(
-            f'<div style="background:rgba(61,110,234,0.06);border:1px solid rgba(61,110,234,0.2);'
-            f'border-radius:8px;padding:9px 14px;margin-bottom:16px;'
-            f'display:flex;align-items:center;gap:10px">'
-            f'<span style="font-size:14px">🕐</span>'
-            f'<span style="font-size:12px;color:{T["blue-l"] if "blue-l" in T else T["blue"]}">'
-            f'<b>Stale cache</b> — Splunk API was unreachable. Showing cached data. '
+            f'<div style="background:rgba(37,99,235,0.035);border:1px solid rgba(37,99,235,0.14);'
+            f'border-radius:6px;padding:5px 10px;margin-bottom:14px;'
+            f'display:flex;align-items:center;gap:6px">'
+            f'<span style="font-size:11px;color:{T["text_sub"]}">'
+            f'<b style="font-weight:600;color:{T["text"]}">Stale cache</b> — Splunk API was unreachable. Showing cached data. '
             f'Connect to VPN and refresh to get live data.'
             f'</span></div>',
             unsafe_allow_html=True,
@@ -3470,131 +3794,107 @@ if page == "Overview":
     rate      = round(finished / total * 100, 1) if total else 0
 
     # ── KPI row ──
-    k1, k2, k3, k4, k5 = st.columns(5, gap="small")
-    k1.metric("Total Executions",  total)
-    k2.metric("Completed",          finished)
-    k3.metric("Failed",            failed_n)
-    k4.metric("Cancelled",         cancelled)
-    k5.metric("Completion Rate",   f"{rate}%")
-
+    _overview_kpis = (
+        ("Total Executions", total, T["text"], "activity"),
+        ("Completed", finished, T["green"], "check"),
+        ("Failed", failed_n, T["red"], "warning"),
+        ("Cancelled", cancelled, T["text_muted"], "close"),
+        ("Completion Rate", f"{rate}%", T["blue"], "analytics"),
+    )
+    _kpi_cards = "".join(
+        f'<div style="min-height:112px;padding:24px;background:{"#000000" if _IS_DARK else "#FFFFFF"};'
+        f'border:1px solid {T["border"]};border-radius:14px;box-shadow:0 1px 2px rgba(15,23,42,.04);'
+        f'display:flex;flex-direction:column;justify-content:space-between">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+        f'<p style="margin:0;font-size:0.72rem;font-weight:500;color:{T["text"] if _IS_DARK else T["text_muted"]};'
+        f'letter-spacing:0.01em">{label}</p>{overview_kpi_icon(icon, color)}</div>'
+        f'<p style="margin:14px 0 0;font-size:2rem;line-height:1;font-weight:750;'
+        f'letter-spacing:-0.035em;color:{color}">{value}</p>'
+        f'</div>'
+        for label, value, color, icon in _overview_kpis
+    )
+    st.markdown(
+        f'<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));'
+        f'gap:16px;margin:8px 0 24px">{_kpi_cards}</div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Charts row ──
-    left, right = st.columns([3, 2], gap="medium")
+    left, right = st.columns(2, gap="medium")
 
     with left:
-        with content_card():
-            section_label("Failures by Pipeline Step")
+        with content_card(overview=True):
+            overview_section_title("Failures by Pipeline Step")
 
             if not failed_df.empty and "firstFailedStep" in failed_df.columns:
                 step_df = failed_df["firstFailedStep"].value_counts().reset_index()
                 step_df.columns = ["Step", "Count"]
                 max_count = step_df["Count"].max()
 
-                step_colors = [T["red"], T["amber"], T["blue"], T["green"], T["gray"]]
-                for i, row in step_df.iterrows():
-                    stat_bar(row["Step"], row["Count"], max_count,
-                             step_colors[i % len(step_colors)])
+                for _, row in step_df.head(6).iterrows():
+                    stat_bar(row["Step"], row["Count"], max_count, T["red"])
             else:
                 st.info("No failed step data.")
 
     with right:
-        with content_card():
-            section_label("Status Distribution")
+        with content_card(overview=True):
+            overview_section_title("Status Distribution")
             status_counts = pipeline_df["Status"].value_counts()
+            _status_colors = {
+                "FINISHED": T["green"],
+                "FAILED": T["red"],
+                "ERROR": T["red"],
+                "CANCELLED": T["gray"],
+                "RUNNING": T["blue"],
+            }
             fig_pie = go.Figure(go.Pie(
                 labels=status_counts.index,
                 values=status_counts.values,
-                hole=0.68,
+                hole=0.72,
                 marker=dict(
-                    colors=[T["green"], T["red"], T["amber"], T["gray"]],
-                    line=dict(color=T["surface"], width=3),
+                    colors=[_status_colors.get(status, T["gray"]) for status in status_counts.index],
+                    line=dict(color=T["surface"], width=2),
                 ),
-                textinfo="percent",
-                textfont=dict(size=11, color=T["text"]),
+                textinfo="none",
                 hovertemplate="<b>%{label}</b><br>%{value} executions<br>%{percent}<extra></extra>",
             ))
-            theme = chart_theme(240)
+            theme = chart_theme(205)
             theme.update(
+                margin=dict(t=0, b=0, l=0, r=0),
                 annotations=[dict(
-                    text=f'<b style="font-size:20px">{rate}%</b><br>'
-                         f'<span style="font-size:11px;color:{T["text_sub"]}">Success</span>',
+                    text=f'<b style="font-size:18px">{rate}%</b><br>'
+                         f'<span style="font-size:10px;color:{T["text_muted"]}">Complete</span>',
                     x=0.5, y=0.5, font_size=14, showarrow=False,
                     font=dict(color=T["text"]),
                 )]
             )
             fig_pie.update_layout(**theme)
-            st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": False})
             legend_items = list(zip(
                 status_counts.index,
-                [T["green"], T["red"], T["amber"], T["gray"]],
+                [_status_colors.get(status, T["gray"]) for status in status_counts.index],
                 status_counts.values,
             ))
             legend_html = "".join(
                 f'<span style="display:inline-flex;align-items:center;gap:5px;'
-                f'margin-right:14px;font-size:0.75rem;color:{T["text_sub"]}">'
-                f'<span style="width:8px;height:8px;border-radius:2px;'
-                f'background:{c};flex-shrink:0"></span>{l} <strong style="color:{T["text"]}">{v}</strong></span>'
+                f'margin:0 0 9px;font-size:0.72rem;color:{T["text_muted"]}">'
+                f'<span style="width:6px;height:6px;border-radius:999px;'
+                f'background:{c};flex-shrink:0"></span>{l}'
+                f'<strong style="margin-left:auto;color:{T["text"]};font-weight:600">{v}</strong></span>'
                 for l, c, v in legend_items
             )
-            st.markdown(
-                f'<div style="text-align:center;padding:0 0 0.5rem 0">{legend_html}</div>',
-                unsafe_allow_html=True,
-            )
-
-
-    # ── Trend chart ──
-    with content_card():
-        section_label("Execution Trend — Last 30 Days")
-        if "Deploy Start Time" in pipeline_df.columns:
-            df_t = pipeline_df.copy()
-            df_t["date"] = pd.to_datetime(
-                df_t["Deploy Start Time"].str.replace(r"\s*(PDT|PST|UTC|GMT)$", "", regex=True),
-                errors="coerce"
-            ).dt.date
-            df_t = df_t.dropna(subset=["date"])
-            daily = df_t.groupby(["date", "Status"]).size().reset_index(name="count")
-            color_map = {
-                "FINISHED": T["green"], "FAILED": T["red"],
-                "ERROR": T["amber"],    "CANCELLED": T["gray"],
-            }
-            status_order = ["CANCELLED", "FAILED", "ERROR", "FINISHED", "RUNNING"]
-            fig_bar = go.Figure()
-            for status in status_order:
-                sub = daily[daily["Status"] == status]
-                if sub.empty:
-                    continue
-                fig_bar.add_trace(go.Bar(
-                    x=sub["date"], y=sub["count"],
-                    name=status,
-                    marker_color=color_map.get(status, T["gray"]),
-                    marker_line_width=0,
-                ))
-            t3 = chart_theme(210, show_legend=False)
-            t3["bargap"] = 0.35
-            t3["barmode"] = "stack"
-            t3["margin"] = dict(t=4, b=4, l=0, r=0)
-            fig_bar.update_layout(**t3)
-            st.plotly_chart(fig_bar, use_container_width=True, config={"displayModeBar": False})
-            _legend_items = [
-                ("CANCELLED", T["gray"]), ("FAILED", T["red"]),
-                ("ERROR", T["amber"]), ("FINISHED", T["green"]), ("RUNNING", T["blue"]),
-            ]
-            st.markdown(
-                '<div style="display:flex;gap:16px;flex-wrap:wrap;padding:2px 0">'
-                + "".join(
-                    f'<span style="display:inline-flex;align-items:center;gap:5px;'
-                    f'font-size:0.75rem;color:#555">'
-                    f'<span style="width:10px;height:10px;border-radius:2px;background:{c}"></span>'
-                    f'{l}</span>'
-                    for l, c in _legend_items
+            _donut_col, _legend_col = st.columns([1.1, 0.9], gap="small")
+            with _donut_col:
+                st.plotly_chart(fig_pie, use_container_width=True, config={"displayModeBar": False})
+            with _legend_col:
+                st.markdown(
+                    f'<div style="padding-top:1.2rem;display:flex;flex-direction:column">{legend_html}</div>',
+                    unsafe_allow_html=True,
                 )
-                + '</div>',
-                unsafe_allow_html=True,
-            )
+
 
     # ── Table ──
-    with content_card():
-        section_label("Recent Failed Executions", dark=True)
+    with content_card(overview=True):
+        overview_section_title("Recent Failed Executions")
         if not failed_df.empty:
             render_failed_executions_table(
                 failed_df,
@@ -3603,21 +3903,6 @@ if page == "Overview":
             )
         else:
             st.success("No recent failures found.")
-
-    # ── Memory stats ──
-    try:
-        from vector_store.store import memory_stats
-        stats = memory_stats()
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        section_label("Memory Store")
-        m1, m2, m3 = st.columns(3, gap="small")
-        m1.metric("Failures in Memory",      stats.get("failure_memory", 0))
-        m2.metric("Scan Findings in Memory", stats.get("scan_memory", 0))
-        m3.metric("Cache TTL",               f'{os.getenv("SPLUNK_CACHE_TTL_MINUTES","30")} min')
-        st.markdown("</div>", unsafe_allow_html=True)
-    except Exception:
-        pass
-
 
 # ═══════════════════════════════════════════════════════════
 # PAGE 2 — FAILURE ANALYSIS
@@ -3811,8 +4096,8 @@ elif page == "Risk Assessment":
             st.info("No pipeline executions found in the current data export.")
         else:
             # Column headers
-            _dh = st.columns([1.2, 1.3, 1.5, 1.8, 1.0])
-            for _col, _lbl in zip(_dh, ["Execution", "Status", "Failed Step", "Started", "Duration"]):
+            _dh = st.columns([1.2, 1.3, 1.5, 1.8])
+            for _col, _lbl in zip(_dh, ["Execution", "Status", "Failed Step", "Started"]):
                 _col.markdown(
                     f'<p style="font-size:0.67rem;font-weight:700;text-transform:uppercase;'
                     f'letter-spacing:0.08em;color:{T["text_muted"]};margin:0;padding:4px 0">{_lbl}</p>',
@@ -3826,13 +4111,11 @@ elif page == "Risk Assessment":
                 _status = str(_dr.get("Status", ""))
                 _step   = str(_dr.get("firstFailedStep", "") or "")
                 _step   = "" if _step == "nan" else _step
-                _dur    = _dr.get("Duration (Min)", 0)
                 _start  = str(_dr.get("Deploy Start Time", ""))
                 try:
                     _start_fmt = pd.to_datetime(_start).strftime("%b %d · %H:%M")
                 except Exception:
                     _start_fmt = _start[:16]
-                _dur_str = f"{int(_dur)}m" if _dur else "—"
                 _is_sel = _eid == _sel_dev
 
                 # Status styling
@@ -3840,7 +4123,7 @@ elif page == "Risk Assessment":
                        "ERROR": T["red"], "CANCELLED": T["text_muted"]}.get(_status, T["text_muted"])
                 _si = {"FINISHED": "✓", "FAILED": "✗", "ERROR": "✗", "CANCELLED": "○"}.get(_status, "·")
 
-                _dc1, _dc2, _dc3, _dc4, _dc5 = st.columns([1.2, 1.3, 1.5, 1.8, 1.0])
+                _dc1, _dc2, _dc3, _dc4 = st.columns([1.2, 1.3, 1.5, 1.8])
                 with _dc1:
                     if st.button(
                         _eid[-8:],
@@ -3854,11 +4137,12 @@ elif page == "Risk Assessment":
                         st.session_state["risk_dev_step"] = _step
                         st.session_state.pop("risk_commit_input", None)
                         st.session_state.pop("risk_report", None)
+                        st.session_state["risk_scroll_to_analysis"] = True
                         st.rerun()
+                _text_color = T["text"] if _IS_DARK else T["text_muted"]
                 _dc2.markdown(f'<p style="font-size:0.8rem;color:{_sc};font-weight:600;margin:6px 0">{_si} {_status}</p>', unsafe_allow_html=True)
-                _dc3.markdown(f'<p style="font-size:0.78rem;color:{T["red"] if _step else T["text_muted"]};margin:6px 0">{_step or "—"}</p>', unsafe_allow_html=True)
-                _dc4.markdown(f'<p style="font-size:0.78rem;color:{T["text_muted"]};margin:6px 0">{_start_fmt}</p>', unsafe_allow_html=True)
-                _dc5.markdown(f'<p style="font-size:0.78rem;color:{T["text_muted"]};margin:6px 0">{_dur_str}</p>', unsafe_allow_html=True)
+                _dc3.markdown(f'<p style="font-size:0.78rem;color:{T["red"] if _step else _text_color};margin:6px 0">{_step or "—"}</p>', unsafe_allow_html=True)
+                _dc4.markdown(f'<p style="font-size:0.78rem;color:{_text_color};margin:6px 0">{_start_fmt}</p>', unsafe_allow_html=True)
 
     # ── Recent git commits ────────────────────────────────────────────────────
     with content_card():
@@ -3943,8 +4227,12 @@ elif page == "Risk Assessment":
         f'border-radius:8px;padding:12px 16px;margin:8px 0 6px 0">'
         f'<p style="font-size:0.78rem;font-weight:600;color:{T["text"]};margin:0 0 6px 0">'
         f'Paste a commit SHA</p>'
+        f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0 0 4px 0;line-height:1.7">'
+        f'<b>Before triggering a pipeline:</b> run '
+        f'<code style="background:{T["surface"]};padding:1px 5px;border-radius:3px">git log --oneline -5</code> '
+        f'in your terminal to get the latest commit SHA.</p>'
         f'<p style="font-size:0.72rem;color:{T["text_muted"]};margin:0;line-height:1.7">'
-        f'<b>Where to find it:</b> Open Cloud Manager → your program → Pipelines → click any execution → '
+        f'<b>After a pipeline has run:</b> Open Cloud Manager → your program → Pipelines → click any execution → '
         f'look for <code style="background:{T["surface"]};padding:1px 5px;border-radius:3px">COMMIT:</code> '
         f'under the Build &amp; Unit Testing step. Copy the full 40-character SHA shown there.</p>'
         f'</div>',
@@ -4212,6 +4500,8 @@ elif page == "Risk Assessment":
             st.session_state["risk_scroll_to_analysis"] = True
             st.rerun()
 
+    _scroll_risk_page_bottom_if_needed()
+
     # ── Handle selected Dev execution ─────────────────────────────────────────
     _sel_exec   = st.session_state.get("risk_dev_exec", "")
     _sel_status = st.session_state.get("risk_dev_status", "")
@@ -4371,6 +4661,31 @@ elif page == "Risk Assessment":
                                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
                             ).stdout.strip()
                             if _sha_from_tag and len(_sha_from_tag) >= 40:
+                                # Check if tag points to a Jenkins bot commit — if so use parent
+                                _bot_t = ("updated pom.xml file as per build parameters",
+                                          "tagging version", "bump version")
+                                try:
+                                    _tag_title = _sp_tag2.run(
+                                        ["git", "log", "-1", "--format=%s", _sha_from_tag],
+                                        cwd=_git_dir2, capture_output=True, text=True, timeout=5,
+                                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                                    ).stdout.strip().lower()
+                                    _tag_author = _sp_tag2.run(
+                                        ["git", "log", "-1", "--format=%an", _sha_from_tag],
+                                        cwd=_git_dir2, capture_output=True, text=True, timeout=5,
+                                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                                    ).stdout.strip().lower()
+                                    if (any(p in _tag_title for p in _bot_t)
+                                            or "jenkins" in _tag_author or "cicd" in _tag_author):
+                                        _parent = _sp_tag2.run(
+                                            ["git", "rev-list", "-n", "1", f"{_sha_from_tag}^"],
+                                            cwd=_git_dir2, capture_output=True, text=True, timeout=5,
+                                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                                        ).stdout.strip()
+                                        if _parent and len(_parent) >= 40:
+                                            _sha_from_tag = _parent
+                                except Exception:
+                                    pass
                                 _auto_sha = _sha_from_tag
                                 st.session_state["risk_commit_input"] = _auto_sha
                 except Exception:
@@ -4390,35 +4705,40 @@ elif page == "Risk Assessment":
                     except Exception:
                         pass
 
-            # Step 3: pick most recent developer commit from local repo (no remote fetch)
+            # Step 3: pick most recent developer commit from configured branch
+            # Use customer's deploy branch (e.g. stage_and_prod for HDFC), not local HEAD
             if not _auto_sha:
                 try:
-                    import subprocess as _sp
-                    from connectors.git_connector import _local_dir, get_commit_diff
-                    _repo = _local_dir()
-                    _bot_authors = {"jenkins cicd", "jenkins", "bot", "automated"}
-                    # Get commits without triggering a remote fetch
-                    _log = _sp.run(
-                        ["git", "log", "--format=%H|||%an|||%s", "-n", "100"],
-                        cwd=_repo, capture_output=True, text=True, timeout=10,
-                        env={**__import__("os").environ, "GIT_TERMINAL_PROMPT": "0"}
+                    import subprocess as _sp3
+                    _repo3 = _active_customer.get("git_local_dir", "") or os.getenv("GIT_LOCAL_DIR", "")
+                    _branch3 = _active_customer.get("git_branch", "master")
+                    _ref3 = _branch3
+                    _ref_check = _sp3.run(
+                        ["git", "rev-parse", "--verify", _branch3],
+                        cwd=_repo3, capture_output=True, timeout=5,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+                    )
+                    if _ref_check.returncode != 0:
+                        _ref3 = f"origin/{_branch3}"
+                    _bot_authors3 = {"jenkins cicd", "jenkins", "bot", "automated"}
+                    _bot_titles3  = ("updated pom.xml file as per build parameters",
+                                     "tagging version", "bump version")
+                    _log3 = _sp3.run(
+                        ["git", "log", "--format=%H|||%an|||%s", "-n", "50", _ref3],
+                        cwd=_repo3, capture_output=True, text=True, timeout=10,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
                     ).stdout.strip().splitlines()
-                    for _line in _log:
-                        parts = _line.split("|||", 2)
-                        if len(parts) < 2:
+                    for _line3 in _log3:
+                        _parts3 = _line3.split("|||", 2)
+                        if len(_parts3) < 2:
                             continue
-                        _sha, _author, _msg = parts[0], parts[1], parts[2] if len(parts)>2 else ""
-                        if any(b in _author.lower() for b in _bot_authors):
+                        _sha3, _auth3, _msg3 = _parts3[0], _parts3[1], (_parts3[2] if len(_parts3)>2 else "")
+                        if (any(b in _auth3.lower() for b in _bot_authors3)
+                                or any(t in _msg3.lower() for t in _bot_titles3)):
                             continue
-                        # Verify this SHA has actual file changes
-                        try:
-                            _diff_result = get_commit_diff(None, _sha)
-                            if _diff_result.get("changed_files"):
-                                _auto_sha = _sha
-                                st.session_state["risk_commit_input"] = _auto_sha
-                                break
-                        except Exception:
-                            continue
+                        _auto_sha = _sha3
+                        st.session_state["risk_commit_input"] = _auto_sha
+                        break
                 except Exception:
                     pass
 
@@ -4432,7 +4752,7 @@ elif page == "Risk Assessment":
                 unsafe_allow_html=True,
             )
             if "risk_report" not in st.session_state:
-                with ai_analyzing_loader():
+                with ai_analyzing_loader(f"Analysing commit {_auto_sha[:8] if _auto_sha else ''}…"):
                         _status_slot = st.empty()
                         def _status(msg: str):
                             _status_slot.markdown(
@@ -4490,14 +4810,21 @@ elif page == "Risk Assessment":
 
                             _status("Analysing diff and running structural checks…")
                             from concurrent.futures import ThreadPoolExecutor, TimeoutError as _TE2
+                            import contextvars as _cv
                             _TIMEOUT = int(os.getenv("ANALYSIS_TIMEOUT_SEC", "180"))
                             _report_result = [None, None, None]
+                            # Capture isolated context snapshot — each user session gets its
+                            # own ContextVar values (GIT_LOCAL_DIR, credentials, etc.)
+                            # so 20 concurrent users can't overwrite each other's state.
+                            _ctx_snapshot = _cv.copy_context()
                             def _run_analysis():
-                                _r2 = run_pre_deploy_risk(
-                                    commit_sha=_auto_sha, fetch_logs=False,
-                                    use_llm=True, bundle=_base_bundle,
-                                )
-                                _report_result[:] = list(_r2)
+                                def _inner():
+                                    _r2 = run_pre_deploy_risk(
+                                        commit_sha=_auto_sha, fetch_logs=False,
+                                        use_llm=True, bundle=_base_bundle,
+                                    )
+                                    _report_result[:] = list(_r2)
+                                _ctx_snapshot.run(_inner)
                             with ThreadPoolExecutor(max_workers=1) as _ex2:
                                 _fut2 = _ex2.submit(_run_analysis)
                                 try:
@@ -5317,7 +5644,7 @@ elif page == "Risk Assessment":
             _build_findings_html = (
                 '<p class="ra-ui-section-label">Findings in this diff</p>'
                 + "".join(
-                    f'<p class="ra-ui-finding">› {f}</p>'
+                    f'<p class="ra-ui-finding">› {_strip_risk_finding_prefix(f)}</p>'
                     for f in _hero_findings[:5]
                 )
                 + _migration_footnote
@@ -5362,11 +5689,14 @@ elif page == "Risk Assessment":
             else f'<p class="ra-ui-footnote">Based on: {_hero_basis}</p>'
         )
 
+        # Show reasoning as small text when not HOLD, not as huge headline
+        _hero_sub_body = (
+            f'<p style="font-size:0.82rem;color:{T["text_sub"]};margin:0 0 8px 0">{_hero_sub}</p>'
+            if _hero_rec != "HOLD" and _hero_sub else ""
+        )
         _build_card_body = (
-            f'<p class="ra-ui-sub">Code-level risk from this commit\'s changes</p>'
-            f'<p class="ra-ui-sub">Confidence: {int(_hero_conf * 100)}%</p>'
+            f'{_hero_sub_body}'
             f'{_build_findings_html}'
-            f'{_basis_display}'
         )
 
         _env_card_verdict = "—"
@@ -5635,11 +5965,10 @@ elif page == "Risk Assessment":
             _verdict_border = "#BDECD3"
 
         st.markdown(
-            f'<div style="border:2px solid {_verdict_border};border-radius:10px;'
-            f'padding:16px 20px;margin-bottom:16px;background:{_verdict_bg}">'
-            f'<p style="font-size:15px;font-weight:700;color:{_verdict_color};margin:0 0 6px 0">'
+            f'<div class="risk-verdict-banner" style="border:2px solid {_verdict_border};border-radius:10px;'
+            f'padding:12px 18px;margin-bottom:14px;background:{_verdict_bg}">'
+            f'<p style="font-size:14px;font-weight:700;color:{_verdict_color};margin:0">'
             f'{_verdict_icon}&nbsp;&nbsp;{_verdict_title}</p>'
-            f'<p style="font-size:13px;color:#333;margin:0;line-height:1.5">{_hero_sub}</p>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -5680,11 +6009,11 @@ elif page == "Risk Assessment":
         st.markdown(
             '<div class="ra-hero-stack">'
             + risk_summary_card_html(
-                title=f"Code Risk — {_build_fail_pct}% · {int(_hero_conf * 100)}% confidence",
-                percent_label=f"{_build_fail_pct}%",
-                percent_color=_hero_col,
+                title="Code Analysis",
+                percent_label=f"{_build_fail_pct}% confidence",
+                percent_color="#9CA3AF",
                 icon_bg=_hero_col,
-                headline=_hero_sub,
+                headline=_hero_sub if _hero_rec == "HOLD" else "",
                 body_html=_build_card_body,
                 icon_kind=_build_icon_kind,
                 compact=False,
@@ -5719,7 +6048,8 @@ elif page == "Risk Assessment":
             _fix_text = _rec_actions_wf[0] if _rec_actions_wf else ""
 
             _findings_bullets = "".join(
-                f'<li style="font-size:0.83rem;color:#333;line-height:1.55;margin-bottom:4px">{f}</li>'
+                f'<li style="font-size:0.83rem;color:{T["text"]};line-height:1.55;margin-bottom:4px">'
+                f'{_strip_risk_finding_prefix(f)}</li>'
                 for f in _high_findings
             )
             _fix_html = (
@@ -6200,8 +6530,8 @@ elif page == "Risk Assessment":
 # ═══════════════════════════════════════════════════════════
 # PAGE 4 — FAILURE PINPOINT
 # ═══════════════════════════════════════════════════════════
-elif page == "Failure Pinpoint":
-    section_header("Failure Pinpoint", "Identify the exact file and line responsible for a pipeline failure")
+elif page == "Post-Failure Diagnosis":
+    section_header("Post-Failure Diagnosis", "Identify the exact file and line responsible for a pipeline failure")
 
     with st.spinner("Loading execution data..."):
         try:
@@ -6209,6 +6539,19 @@ elif page == "Failure Pinpoint":
         except Exception as e:
             st.error(f"Could not load data: {e}")
             st.stop()
+
+    # Share names are needed to fetch logs — if cache was built without them, fetch now
+    if not share_map:
+        try:
+            from connectors.splunk_connector import fetch_share_names
+            _pid_fp = _active_customer.get("program_id", "")
+            if _pid_fp:
+                with st.spinner("Fetching Azure log locations…"):
+                    _sn = fetch_share_names(int(_pid_fp))
+                    share_map = {str(k): str(v) for k, v in _sn.items()}
+        except Exception:
+            pass
+
     if _data_source in ("csv_fallback_network", "csv", "stale_cache"):
         st.markdown(
             f'<div style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.3);'
@@ -6289,7 +6632,7 @@ elif page == "Failure Pinpoint":
     # Auto-run log analysis when execution is selected and pinpoint is done
     _pf_eid = st.session_state.get("post_failure_eid", "")
     if _pf_eid and _pf_eid == _auto_eid and "post_failure_report" not in st.session_state:
-        with st.spinner(f"Analysing logs for {_pf_eid}..."):
+        with st.spinner(f"Fetching build log for {_pf_eid}..."):
             try:
                 from analysis.post_failure_assessor import assess_failed_execution
                 _pf_report, _pf_md = assess_failed_execution(
@@ -6300,15 +6643,37 @@ elif page == "Failure Pinpoint":
                     failed_df=failed_df,
                     share_map=share_map,
                 )
-                st.session_state["post_failure_md"] = _pf_md
-                st.session_state["post_failure_report"] = (
+                _pf_dict = (
                     _pf_report.model_dump()
                     if hasattr(_pf_report, "model_dump")
                     else _pf_report
                 )
-                st.rerun()
-            except Exception:
-                pass  # log analysis is optional — don't block pinpoint results
+                # Check if log was unavailable — show error instead of storing fake analysis
+                if isinstance(_pf_dict, dict) and _pf_dict.get("log_unavailable"):
+                    st.markdown(
+                        f'<div style="border:1px solid #F59E0B;border-left:4px solid #F59E0B;'
+                        f'border-radius:8px;padding:12px 16px;margin:8px 0;background:#FFFBEB">'
+                        f'<p style="font-weight:700;color:#92400E;margin:0 0 4px 0">⚠ Log Unavailable</p>'
+                        f'<p style="font-size:13px;color:#78350F;margin:0">'
+                        f'{_pf_dict.get("log_error","Log could not be fetched.")}</p>'
+                        f'<p style="font-size:12px;color:#92400E;margin:6px 0 0 0">'
+                        f'Check Cloud Manager → Pipelines → execution {_pf_eid} → View Log directly.</p>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.session_state["post_failure_md"] = _pf_md
+                    st.session_state["post_failure_report"] = _pf_dict
+                    st.rerun()
+            except Exception as _pf_err:
+                st.markdown(
+                    f'<div style="border:1px solid #F59E0B;border-left:4px solid #F59E0B;'
+                    f'border-radius:8px;padding:12px 16px;margin:8px 0;background:#FFFBEB">'
+                    f'<p style="font-weight:700;color:#92400E;margin:0 0 4px 0">⚠ Log Analysis Failed</p>'
+                    f'<p style="font-size:13px;color:#78350F;margin:0">{str(_pf_err)[:200]}</p>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
     if "pinpoint_md" in st.session_state:
         eid       = st.session_state.get("pinpoint_eid", _auto_eid)
@@ -6677,6 +7042,8 @@ elif page == "Memory Explorer":
                     axis=1,
                 )
 
+                _is_dark_mode = st.session_state.get("ui_theme", "light") == "dark"
+
                 fig_scatter = go.Figure()
                 for step, grp in df.groupby("step"):
                     fig_scatter.add_trace(go.Scatter(
@@ -6694,8 +7061,19 @@ elif page == "Memory Explorer":
                         textfont=dict(size=9, color=T["text_sub"]),
                         hovertext=grp["label"],
                         hoverinfo="text",
+                        hoverlabel=dict(
+                            bgcolor="#1E1E1E" if _is_dark_mode else "#FFFFFF",
+                            bordercolor="#444" if _is_dark_mode else "#E5E7EB",
+                            font=dict(color="#FFFFFF" if _is_dark_mode else "#111827", size=11),
+                        ),
                     ))
 
+                # Hover tooltip: black text on white in light mode, white on dark in dark mode
+                fig_scatter.update_layout(hoverlabel=dict(
+                    bgcolor="#1E1E1E" if _is_dark_mode else "#FFFFFF",
+                    font_color="#FFFFFF" if _is_dark_mode else "#111827",
+                    bordercolor="#444" if _is_dark_mode else "#E5E7EB",
+                ))
                 t_sc = chart_theme(420, show_legend=True)
                 t_sc["xaxis"]["showgrid"] = True
                 t_sc["xaxis"]["gridcolor"] = T["border2"]
@@ -7316,6 +7694,36 @@ elif page == "Static Analysis":
 elif page == "Repo Settings":
     section_header("Customer Onboarding", "Add or configure a customer — all settings saved securely on the server")
 
+    if _IS_DARK:
+        st.markdown(
+            "<style>"
+            "[data-testid='stTextInput'] label,"
+            "[data-testid='stTextInput'] input,"
+            "[data-testid='stTextInput'] [data-baseweb='input'],"
+            "[data-testid='stNumberInput'] input,"
+            "[data-testid='stTextArea'] textarea {"
+            "color:#0F172A !important;"
+            "-webkit-text-fill-color:#0F172A !important;"
+            "}"
+            "[data-testid='stSelectbox'] label,"
+            "[data-testid='stSelectbox'] > div > div,"
+            "[data-testid='stSelectbox'] [data-baseweb='select'],"
+            "[data-testid='stSelectbox'] [data-baseweb='select'] span,"
+            "[data-testid='stSelectbox'] [data-baseweb='select'] div[role='button'] {"
+            "color:#FFFFFF !important;"
+            "-webkit-text-fill-color:#FFFFFF !important;"
+            "}"
+            "[data-testid='stTextInput'] input::placeholder,"
+            "[data-testid='stTextInput'] [data-baseweb='input']::placeholder,"
+            "[data-testid='stTextArea'] textarea::placeholder {"
+            "color:#000000 !important;"
+            "-webkit-text-fill-color:#000000 !important;"
+            "opacity:1 !important;"
+            "}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+
     st.caption(
         "Passwords are stored in `data/.secrets.json` (gitignored, server-only). "
         "Customer config saved to `data/customer_config.json`. "
@@ -7369,13 +7777,19 @@ elif page == "Repo Settings":
             )
             _repo_already_exists = bool(_default_path and (Path(_default_path) / ".git").exists())
             _git_local = st.text_input(
-                "Local repo path (optional)",
+                "Local repo path (on this server)",
                 value=_default_path,
                 placeholder=f"{os.getenv('REPOS_BASE_DIR', '/opt/repos')}/repo-name",
-                help="Leave as-is to clone automatically. If the repo is already cloned on this server, point to that path to avoid a second clone."
+                help=(
+                    "Path where the repo will be cloned ON THIS SERVER (not your laptop). "
+                    "Leave as-is — Argus auto-generates it from REPOS_BASE_DIR. "
+                    "Only change if the repo is already cloned at a different path on this server."
+                )
             )
             if _repo_already_exists and _git_local == _default_path:
                 st.success(f"Repo already cloned at `{_git_local}` — will fetch updates only, no duplicate clone.")
+            elif _git_local and _git_local != _default_path and not Path(_git_local).exists():
+                st.warning(f"Path `{_git_local}` does not exist on this server. Argus will clone there automatically.")
 
             # Always use discovered submodules — auto-detected from .gitmodules after clone
             _rc_cfg = json.loads(_repo_config_path().read_text()) if _repo_config_path().exists() else {}

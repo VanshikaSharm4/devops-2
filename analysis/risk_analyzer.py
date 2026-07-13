@@ -15,6 +15,16 @@ from models.bundle import AnalysisBundle, GitContext
 from models.risk_report import RiskReport
 
 
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
+
 def _risk_level(level: str) -> str:
     return {
         "LOW": "Low",
@@ -34,7 +44,7 @@ def attach_git_context(
     Attach git context from Cloud Manager Git (git.cloudmanager.adobe.com).
     Use --commit SHA — PRs are not supported (no GitHub API).
     """
-    bundle.repo = os.getenv("CM_GIT_REPO_URL", "")
+    bundle.repo = _get_ctx("git_url", "CM_GIT_REPO_URL")
 
     if not commit_sha:
         # No SHA — run without git context (pipeline history features only)
@@ -45,7 +55,7 @@ def attach_git_context(
     repo_dir = (
         repo
         or bundle.__dict__.get("git_local_dir")
-        or os.getenv("GIT_LOCAL_DIR", "")
+        or _get_ctx("git_local_dir", "GIT_LOCAL_DIR")
         or None
     )
 
@@ -84,7 +94,7 @@ def _resolve_submodule_customer_name(bundle, program_id: str = "") -> str:
     pid = str(
         program_id
         or bundle.__dict__.get("program_id", "")
-        or _os.getenv("PROGRAM_ID", "")
+        or __get_ctx("program_id", "PROGRAM_ID")
     )
     if pid:
         for cfg_name, cfg in load_repo_config().items():
@@ -133,7 +143,7 @@ def run_pre_deploy_risk(
     # ── Load Splunk data ONCE — reused by all signals below ───────────────────
     # Previously load_data() was called 3-4 times independently, each potentially
     # triggering a full Splunk fetch when the disk cache was stale.
-    _program_id = os.getenv("PROGRAM_ID", "")
+    _program_id = _get_ctx("program_id", "PROGRAM_ID")
     try:
         from analysis.ingest import load_data as _load_once
         _pdf_main, _fdf_main, _fsfdf_main, _share_main = _load_once()
@@ -257,7 +267,7 @@ def run_pre_deploy_risk(
         import os as _os
         git_ctx = bundle.git_context
         if git_ctx:
-            repo_dir = bundle.__dict__.get("git_local_dir") or _os.getenv("GIT_LOCAL_DIR", "")
+            repo_dir = bundle.__dict__.get("git_local_dir") or __get_ctx("git_local_dir", "GIT_LOCAL_DIR")
             structural = predict_build_failures(
                 diff_text       = git_ctx.diff_excerpt or "",
                 changed_files   = git_ctx.changed_files or [],
@@ -569,7 +579,7 @@ def run_pre_deploy_risk(
             repo_dir              = bundle.__dict__.get("git_local_dir", "") or "",
             pipeline_df           = _pdf3,
             failed_df             = _fdf3,
-            program_id            = _program_id or bundle_dict.get("program_id", "") or os.getenv("PROGRAM_ID", ""),
+            program_id            = _program_id or bundle_dict.get("program_id", "") or _get_ctx("program_id", "PROGRAM_ID"),
             dev_execution_status  = bundle.__dict__.get("dev_execution_status", ""),
             pipeline_name         = bundle.__dict__.get("pipeline_name") or "Production Pipeline",
             # Use execution_date ONLY when explicitly set (from Splunk execution selection).
@@ -777,7 +787,7 @@ def save_risk_report(
     On Eris production: set ARGUS_DB_PATH to a persistent volume path.
     """
     sha = commit_sha or ""
-    pid = program_id or os.getenv("PROGRAM_ID", "unknown")
+    pid = program_id or _get_ctx("program_id", "PROGRAM_ID")
 
     # Primary: SQLite — safe for multi-user server, customer-isolated
     # Set ARGUS_DISABLE_CACHE=1 to skip caching during development/testing

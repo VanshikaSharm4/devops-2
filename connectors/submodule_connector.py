@@ -33,6 +33,16 @@ _sm_last_refresh: Dict[str, float] = {}  # {local_dir: timestamp}
 
 # ── Config loading ─────────────────────────────────────────────────────────────
 
+
+def _get_ctx(attr: str, env_key: str, default: str = "") -> str:
+    """Read customer-specific value from thread-safe context, fallback to os.environ."""
+    try:
+        import analysis.customer_context as _cc
+        val = getattr(_cc, f"get_{attr}")()
+        return val if val else os.getenv(env_key, default)
+    except Exception:
+        return os.getenv(env_key, default)
+
 def load_repo_config() -> dict:
     """Load repo_config.json. Returns empty dict if not found."""
     try:
@@ -136,7 +146,7 @@ def refresh_all_submodules(customer_name: str, force: bool = False) -> Dict[str,
     except Exception:
         pass
 
-    username = config.get("git_username", "") or os.getenv("CM_GIT_USERNAME", "")
+    username = config.get("git_username", "") or _get_ctx("git_username", "CM_GIT_USERNAME")
     password = ""
     try:
         _s = _secrets_path()
@@ -145,7 +155,7 @@ def refresh_all_submodules(customer_name: str, force: bool = False) -> Dict[str,
     except Exception:
         pass
     if not password:
-        password = os.getenv("CM_GIT_PASSWORD", "")
+        password = _get_ctx("git_password", "CM_GIT_PASSWORD")
     if not username or not password:
         return {}
 
@@ -328,7 +338,7 @@ def get_submodule_diffs(
     except Exception:
         pass
 
-    username = config.get("git_username", "") or os.getenv("CM_GIT_USERNAME", "")
+    username = config.get("git_username", "") or _get_ctx("git_username", "CM_GIT_USERNAME")
 
     # Try multiple password sources in order of priority
     password = ""
@@ -352,7 +362,7 @@ def get_submodule_diffs(
             password = os.getenv(f"{_short}_CM_GIT_PASSWORD", "")
     # 4. Generic fallback
     if not password:
-        password = os.getenv("CM_GIT_PASSWORD", "")
+        password = _get_ctx("git_password", "CM_GIT_PASSWORD")
 
     if not username or not password:
         print(f"  [submodule] No credentials for '{customer_name}' — skipping submodule diff")
@@ -380,7 +390,7 @@ def get_submodule_diffs(
             work_items.append((sm_name, old_sha, new_sha, sm_cfg["url"], sm_cfg["local_dir"]))
 
     # Get parent repo dir for object-store fallback
-    _parent_repo = os.getenv("GIT_LOCAL_DIR", "")
+    _parent_repo = _get_ctx("git_local_dir", "GIT_LOCAL_DIR")
 
     def _fetch_one(args):
         sm_name, old_sha, new_sha, sm_url, sm_local = args
