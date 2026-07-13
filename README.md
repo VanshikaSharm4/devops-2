@@ -17,7 +17,7 @@ Argus answers three classes of DevOps questions.
 | Question | Feature | How |
 |----------|---------|-----|
 | **Should we deploy this commit?** | **Risk Assessment** | Structural code analysis + environment health + historical similarity + LLM synthesis |
-| **What failed and why?** | **Post-Failure Diagnosis** | LogSage log filtering + hybrid retrieval (BM25 + embeddings) + LLM root-cause analysis |
+| **What failed and why?** | **Post-Failure Diagnosis** | Log filtering + hybrid retrieval (BM25 + embeddings) + LLM root-cause analysis |
 | **What is failing across the program?** | **Failure Analysis** | 30-day Splunk rollup with AI-generated executive report |
 
 Additional capabilities include:
