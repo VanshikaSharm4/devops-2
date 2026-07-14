@@ -2680,6 +2680,13 @@ def get_data_or_stop():
     except Exception:
         pass
 
+    # ML dataset: resolve factual observations with Splunk ground-truth labels
+    try:
+        from analysis.ml_dataset_store import enrich_from_splunk as enrich_ml_dataset
+        enrich_ml_dataset(pdf, fdf, program_id=str(_pid))
+    except Exception:
+        pass
+
     return pdf, fdf, smap, src
 
 
@@ -4945,6 +4952,23 @@ elif page == "Risk Assessment":
                                 )
                             except Exception:
                                 pass
+                            try:
+                                from analysis.ml_dataset_store import record_risk_assessment_observation
+                                record_risk_assessment_observation(
+                                    commit_sha=_auto_sha,
+                                    program_id=_active_customer.get("program_id", "19905"),
+                                    tenant_id=_active_customer.get("tenant_id", ""),
+                                    execution_id=_sel_exec or "",
+                                    pipeline_name="Production Pipeline",
+                                    bundle=_base_bundle,
+                                    report=report,
+                                    pipeline_df=pipeline_df,
+                                    failed_df=failed_df,
+                                    repo_dir=_cust_git_dir,
+                                    as_of_date=_exec_date,
+                                )
+                            except Exception:
+                                pass
                             st.rerun()
                         except Exception as e:
                             _err_str = str(e)
@@ -5177,6 +5201,24 @@ elif page == "Risk Assessment":
                             "p_fail": _dec2.code.score if _dec2 else 0,
                         } if _dec2 else {},
                         primary_driver=_dec2.primary_driver if _dec2 else "llm",
+                    )
+                except Exception:
+                    pass
+                try:
+                    from analysis.ml_dataset_store import record_risk_assessment_observation
+                    record_risk_assessment_observation(
+                        commit_sha=_auto_sha,
+                        program_id=_active_customer.get("program_id", "19905"),
+                        tenant_id=_active_customer.get("tenant_id", ""),
+                        execution_id="",
+                        pipeline_name="Production Pipeline",
+                        bundle=_base_bundle,
+                        report=report,
+                        pipeline_df=pipeline_df,
+                        failed_df=failed_df,
+                        diff_text=_pre_diff.get("diff", "") if _pre_diff else "",
+                        changed_files=_pre_diff.get("changed_files", []) if _pre_diff else [],
+                        repo_dir=_found_git_dir,
                     )
                 except Exception:
                     pass

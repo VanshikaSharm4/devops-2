@@ -791,7 +791,8 @@ def save_risk_report(
 
     # Primary: SQLite — safe for multi-user server, customer-isolated
     # Set ARGUS_DISABLE_CACHE=1 to skip caching during development/testing
-    if not os.getenv("ARGUS_DISABLE_CACHE"):
+    # Set ARGUS_SKIP_REPORT_PERSIST=1 to skip long-term report storage on Eris
+    if not os.getenv("ARGUS_DISABLE_CACHE") and not os.getenv("ARGUS_SKIP_REPORT_PERSIST"):
         try:
             from db.report_store import save_risk_report as _db_save
             _report_dict = report.model_dump(mode="json")
@@ -807,6 +808,9 @@ def save_risk_report(
             warnings.warn(f"[report_store] SQLite write failed: {_e}", stacklevel=2)
 
     # Legacy: file-based (kept for local dev debugging, harmless on server)
+    if os.getenv("ARGUS_SKIP_REPORT_PERSIST"):
+        return "", ""
+
     os.makedirs(out_dir, exist_ok=True)
     suffix = f"PR-{pr_number}" if pr_number else f"commit-{sha[:8]}"
     md_path   = os.path.join(out_dir, f"risk_{suffix}.md")

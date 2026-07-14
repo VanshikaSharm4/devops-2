@@ -43,3 +43,11 @@ def sqlite_db_path() -> Path:
 
 def splunk_exports_dir() -> Path:
     return data_dir() / "splunk_exports"
+
+
+def ml_dataset_dir() -> Path:
+    return data_dir() / "ml_dataset"
+
+
+def ml_exports_dir() -> Path:
+    return data_dir() / "ml_exports"
