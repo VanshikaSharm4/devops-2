@@ -99,21 +99,6 @@ def _load_customers() -> dict:
             "splunk_index":  c.get("splunk_index", "ams_linux-os"),
         }
 
-    # Fallback: hardcoded defaults if config file missing
-    if not customers:
-        customers = {
-            "IDFC First Bank": {
-                "program_id": os.getenv("PROGRAM_ID_IDFC", "19905"),
-                "pipeline_prod": os.getenv("PIPELINE_ID_PROD_IDFC", "2357452"),
-                "pipeline_dev": os.getenv("PIPELINE_ID_DEV_IDFC", "47202398"),
-                "org_id": "358458CC558C6B5D7F000101@AdobeOrg",
-                "tenant_id": "idfc", "short": "IDFC",
-                "git_local_dir": os.getenv("IDFC_GIT_LOCAL_DIR", ""),
-                "git_username": os.getenv("IDFC_CM_GIT_USERNAME", ""),
-                "git_password": os.getenv("IDFC_CM_GIT_PASSWORD", ""),
-                "git_url": "", "git_branch": "master",
-            },
-        }
     return customers
 
 
@@ -161,12 +146,13 @@ elif "selected_customer" not in st.session_state:
 # Instead, pass TenantContext explicitly; only apply_to_env() inside analysis calls.
 from analysis.tenant_context import TenantContext as _TenantContext
 
-_active_customer = _CUSTOMERS.get(
-    st.session_state.get("selected_customer", "IDFC First Bank"),
-    _CUSTOMERS["IDFC First Bank"],
-)
+_first_customer = list(_CUSTOMERS.keys())[0] if _CUSTOMERS else ""
+_selected_customer_name = st.session_state.get("selected_customer", _first_customer)
+if _selected_customer_name not in _CUSTOMERS:
+    _selected_customer_name = _first_customer
+_active_customer = _CUSTOMERS.get(_selected_customer_name, {})
 _tenant_ctx = _TenantContext.from_customer_dict(
-    st.session_state.get("selected_customer", "IDFC First Bank"),
+    _selected_customer_name,
     _active_customer,
 )
 # Store in session state so analysis calls can access it without re-reading env
@@ -1750,6 +1736,16 @@ st.markdown(f"""
     margin-bottom: var(--space-3) !important;
     box-shadow: 0 1px 2px rgba(15,23,42,.04) !important;
 }}
+.overview-chart-marker {{
+    display: none;
+}}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.overview-chart-marker) {{
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}}
 .risk-workspace-help {{
     color: #6E6E6E;
     font-size: 12.5px;
@@ -2227,11 +2223,12 @@ def historical_matches_carousel_html(hits: list, tokens: dict) -> str:
 
 
 @contextmanager
-def content_card(*, overview: bool = False):
+def content_card(*, overview: bool = False, border: bool = True):
     """Single bordered card — avoids empty white blocks from split <div class='panel'> tags."""
-    with st.container(border=True):
+    with st.container(border=border):
         if overview:
-            st.markdown('<span class="overview-card-marker"></span>', unsafe_allow_html=True)
+            marker = "overview-chart-marker" if not border else "overview-card-marker"
+            st.markdown(f'<span class="{marker}"></span>', unsafe_allow_html=True)
         yield
 
 
@@ -3823,7 +3820,7 @@ elif page == "Overview":
     left, right = st.columns(2, gap="medium")
 
     with left:
-        with content_card(overview=True):
+        with content_card(overview=True, border=False):
             overview_section_title("Failures by Pipeline Step")
 
             if not failed_df.empty and "firstFailedStep" in failed_df.columns:
@@ -3837,7 +3834,7 @@ elif page == "Overview":
                 st.info("No failed step data.")
 
     with right:
-        with content_card(overview=True):
+        with content_card(overview=True, border=False):
             overview_section_title("Status Distribution")
             status_counts = pipeline_df["Status"].value_counts()
             _status_colors = {
@@ -7835,10 +7832,20 @@ elif page == "Repo Settings":
             _cust_short   = _prefill.get("short", "")
             _oc3, _oc4    = st.columns(2)
             _prog_id      = _oc3.text_input("Adobe CM Program ID", value=_prefill.get("program_id",""), placeholder="e.g. 19905")
-            _org_id       = _oc4.text_input("Adobe Org ID", value=_prefill.get("org_id",""), placeholder="e.g. XXXXXX@AdobeOrg")
-            _oc5, _oc6    = st.columns(2)
-            _pip_prod     = _oc5.text_input("Production Pipeline ID", value=_prefill.get("pipeline_prod",""), placeholder="e.g. 2357452")
-            _pip_dev      = _oc6.text_input("Dev Pipeline ID", value=_prefill.get("pipeline_dev",""), placeholder="e.g. 47202398")
+            _org_id       = _oc4.text_input("Adobe Org ID (optional)", value=_prefill.get("org_id",""), placeholder="e.g. XXXXXX@AdobeOrg")
+            _oc5, _oc6 = st.columns(2)
+            _pip_prod = _oc5.text_input("Production Pipeline ID", value=_prefill.get("pipeline_prod",""), placeholder="e.g. 2357452")
+            _pip_dev  = _oc6.text_input("Dev Pipeline ID", value=_prefill.get("pipeline_dev",""), placeholder="e.g. 47202398")
+            _existing_extra_ids = ", ".join(
+                p.get("id","") for p in _prefill.get("pipelines", [])
+                if p.get("id","").strip()
+            )
+            _pip_extra_raw = st.text_input(
+                "Additional Pipeline IDs (optional)",
+                value=_existing_extra_ids,
+                placeholder="e.g. 12345678, 87654321, 11112222",
+                help="QA, UAT, Stage etc. — comma separated IDs from Cloud Manager → Pipelines"
+            )
 
             st.markdown("#### Git Repository")
             st.caption("Find these in Adobe Cloud Manager → Your Program → Repositories")
@@ -7856,21 +7863,7 @@ elif page == "Repo Settings":
                 f"{os.getenv('REPOS_BASE_DIR', str(Path.home() / 'projects'))}/{_default_repo_name}"
                 if _default_repo_name else ""
             )
-            _repo_already_exists = bool(_default_path and (Path(_default_path) / ".git").exists())
-            _git_local = st.text_input(
-                "Local repo path (on this server)",
-                value=_default_path,
-                placeholder=f"{os.getenv('REPOS_BASE_DIR', '/opt/repos')}/repo-name",
-                help=(
-                    "Path where the repo will be cloned ON THIS SERVER (not your laptop). "
-                    "Leave as-is — Argus auto-generates it from REPOS_BASE_DIR. "
-                    "Only change if the repo is already cloned at a different path on this server."
-                )
-            )
-            if _repo_already_exists and _git_local == _default_path:
-                st.success(f"Repo already cloned at `{_git_local}` — will fetch updates only, no duplicate clone.")
-            elif _git_local and _git_local != _default_path and not Path(_git_local).exists():
-                st.warning(f"Path `{_git_local}` does not exist on this server. Argus will clone there automatically.")
+            _git_local = _default_path
 
             # Always use discovered submodules — auto-detected from .gitmodules after clone
             _rc_cfg = json.loads(_repo_config_path().read_text()) if _repo_config_path().exists() else {}
@@ -7889,10 +7882,12 @@ elif page == "Repo Settings":
                         _repo_name = _git_url.rstrip("/").split("/")[-1]
                         _repos_base2 = os.getenv("REPOS_BASE_DIR", str(Path.home() / "projects"))
                         _git_local = f"{_repos_base2}/{_repo_name}"
+                    _pip_extra_ids = [p.strip() for p in _pip_extra_raw.split(",") if p.strip().isdigit()]
                     _new_cfg = {
                         "program_id":    _prog_id,
                         "pipeline_prod": _pip_prod,
                         "pipeline_dev":  _pip_dev,
+                        "pipelines":     [{"id": pid} for pid in _pip_extra_ids],
                         "org_id":        _org_id,
                         "tenant_id":     _tenant_id,
                         "short":         _cust_short.upper() if _cust_short else _cust_name[:4].upper(),
@@ -8089,10 +8084,15 @@ elif page == "Repo Settings":
         for _cn, _cc in _all.items():
             _has_git = bool(_cc.get("git_local_dir") and Path(_cc["git_local_dir"]).exists())
             _status  = "Repo cloned" if _has_git else "Repo not found locally"
+            _cloned_badge = "✓ Cloned" if _has_git else "✗ Not cloned"
             with st.expander(f"{_cc.get('short','?')} — {_cn}  |  Program {_cc.get('program_id','?')}  |  {_status}"):
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Program ID", _cc.get("program_id","—"))
                 c2.metric("Prod Pipeline", _cc.get("pipeline_prod","—"))
                 c3.metric("Dev Pipeline", _cc.get("pipeline_dev","—"))
                 st.code(_cc.get("git_url","—"), language=None)
-                st.caption(f"Branch: {_cc.get('git_branch','master')} | Local: {_cc.get('git_local_dir','—')}")
+                _lcol, _rcol = st.columns([4, 1])
+                _lcol.caption(f"Branch: {_cc.get('git_branch','master')} | Local: {_cc.get('git_local_dir','—')} | {_cloned_badge}")
+                if _rcol.button("Remove", key=f"rm_{_cn}", type="secondary"):
+                    _delete_customer(_cn)
+                    st.rerun()
