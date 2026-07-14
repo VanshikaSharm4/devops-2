@@ -138,7 +138,7 @@ _qp_customer = st.query_params.get("customer", "")
 if _qp_customer in _CUSTOMERS:
     st.session_state["selected_customer"] = _qp_customer
 elif "selected_customer" not in st.session_state:
-    st.session_state["selected_customer"] = list(_CUSTOMERS.keys())[0]
+    st.session_state["selected_customer"] = list(_CUSTOMERS.keys())[0] if _CUSTOMERS else ""
 
 # Build TenantContext from selected customer — do NOT write to os.environ here.
 # Writing to os.environ is process-global: 10 concurrent Streamlit sessions share
@@ -2748,7 +2748,7 @@ def _render_top_navigation_bar() -> None:
     import streamlit.components.v1 as components
 
     # Serialize customer data
-    active_customer = st.session_state.get("selected_customer", list(_CUSTOMERS.keys())[0])
+    active_customer = st.session_state.get("selected_customer", list(_CUSTOMERS.keys())[0] if _CUSTOMERS else "")
     customers_list = list(_CUSTOMERS.keys())
     theme_name = st.session_state.get("ui_theme", "light")
     theme_colors = _THEMES[theme_name]
@@ -3705,6 +3705,12 @@ with st.sidebar:
 
 
 page = st.session_state.get("page", _PAGE_ROUTES["argus_home"])
+
+# ── No customers configured — show Argus home with setup prompt ──────────────
+if not _CUSTOMERS:
+    render_argus_home()
+    st.info("No customers set up yet — go to **Repo Settings** to add your first customer.")
+    st.stop()
 
 # ═══════════════════════════════════════════════════════════
 # PAGE: ARGUS HOME
