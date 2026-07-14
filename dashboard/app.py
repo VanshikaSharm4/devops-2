@@ -151,15 +151,12 @@ _selected_customer_name = st.session_state.get("selected_customer", _first_custo
 if _selected_customer_name not in _CUSTOMERS:
     _selected_customer_name = _first_customer
 _active_customer = _CUSTOMERS.get(_selected_customer_name, {})
-_tenant_ctx = _TenantContext.from_customer_dict(
-    _selected_customer_name,
-    _active_customer,
-)
-# Store in session state so analysis calls can access it without re-reading env
-st.session_state["_tenant_ctx"] = _tenant_ctx
-
-# Apply to os.environ for backward compat (legacy code that still reads it directly)
-_tenant_ctx.apply_to_env()
+if _selected_customer_name and _CUSTOMERS:
+    _tenant_ctx = _TenantContext.from_customer_dict(_selected_customer_name, _active_customer)
+    st.session_state["_tenant_ctx"] = _tenant_ctx
+    _tenant_ctx.apply_to_env()
+else:
+    _tenant_ctx = _TenantContext.from_customer_dict("", {})
 
 # Set thread-safe ContextVar values — zero-race alternative to os.environ
 # Each Streamlit session gets its own isolated context snapshot via copy_context()
@@ -2643,7 +2640,7 @@ def get_data_or_stop():
     If data isn't ready yet (first fetch for this customer), shows a loading
     message and stops rendering — never passes an empty DataFrame to pages.
     """
-    _pid = _active_customer["program_id"] or "19905"
+    _pid = _active_customer.get("program_id") or "19905"
     pdf, fdf, smap, src = load_splunk_data(_pid)
     if pdf.empty and src == "loading":
         _maybe_start_bg_refresh(force=True)
@@ -2652,7 +2649,7 @@ def get_data_or_stop():
             f'background:#F5F8FF;border:1px solid #C0D2FA;border-radius:6px;'
             f'padding:14px 18px;font-size:13px;color:#1473E6;margin-top:20px">'
             f'<span style="font-size:1.2rem">⟳</span>'
-            f'&nbsp;<div><strong>Fetching data for {_active_customer["short"]} from Splunk...</strong><br>'
+            f'&nbsp;<div><strong>Fetching data for {_active_customer.get("short","this customer")} from Splunk...</strong><br>'
             f'<span style="font-size:12px;opacity:0.8">This takes ~30 seconds on first load.</span></div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -4014,9 +4011,9 @@ elif page == "Failure Analysis":
         action_list(saved.get("top_recommended_actions", []))
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.md").exists():
+        if Path(f"reports/latest_report_{_active_customer.get('program_id', '19905') or '19905'}.md").exists():
             with st.expander("View full markdown report"):
-                st.markdown(Path(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.md").read_text())
+                st.markdown(Path(f"reports/latest_report_{_active_customer.get('program_id', '19905') or '19905'}.md").read_text())
     else:
         st.info("No saved report found. Run an analysis to generate one.")
 
@@ -4040,7 +4037,7 @@ elif page == "Failure Analysis":
                 except Exception:
                     # Fallback to file
                     os.makedirs("reports", exist_ok=True)
-                    with open(f"reports/latest_report_{_active_customer['program_id'] or '19905'}.json", "w") as f:
+                    with open(f"reports/latest_report_{_active_customer.get('program_id', '19905') or '19905'}.json", "w") as f:
                         json.dump(report.model_dump(mode="json"), f, indent=2)
                 st.cache_data.clear()
                 st.cache_resource.clear()

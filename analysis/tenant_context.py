@@ -36,7 +36,7 @@ class TenantContext:
         return cls(
             customer_name = name,
             program_id    = str(cfg.get("program_id") or ""),
-            tenant_id     = cfg.get("tenant_id") or name.lower().split()[0],
+            tenant_id     = cfg.get("tenant_id") or (name.lower().split()[0] if name.strip() else ""),
             git_local_dir = cfg.get("git_local_dir") or "",
             git_url       = cfg.get("git_url") or "",
             git_branch    = cfg.get("git_branch") or "master",
