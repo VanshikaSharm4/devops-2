@@ -202,7 +202,8 @@ def clone_or_update() -> str:
         fetch_result = subprocess.run(
             ["git", "fetch", "--prune", auth_url, "+refs/heads/*:refs/remotes/origin/*"],
             cwd=str(repo_dir), capture_output=True, text=True,
-            timeout=20, env=_env,
+            timeout=45,  # increased: repos with many QA/UAT/release branches need more time
+            env=_env,
         )
         if fetch_result.returncode != 0:
             raise RuntimeError(fetch_result.stderr[:300])
@@ -410,9 +411,26 @@ def get_commit_diff(repo: Optional[str], sha: str) -> Dict[str, Any]:
             clone_or_update()
 
         if not _sha_exists(sha, repo_dir):
+            # Last resort: the SHA is on a non-default branch (e.g. qa-release, uat, hotfix).
+            # clone_or_update() only fetches and fast-forwards the configured branch.
+            # Try fetching ALL branches explicitly to pick up the commit.
+            print(f"  [git] SHA still not found — fetching all branches to locate {sha[:12]}...")
+            try:
+                _auth2 = _auth_url()
+                _env2  = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+                subprocess.run(
+                    ["git", "fetch", "--prune", _auth2, "+refs/heads/*:refs/remotes/origin/*"],
+                    cwd=_repo_path, capture_output=True, text=True, timeout=30, env=_env2,
+                )
+            except Exception:
+                pass
+
+        if not _sha_exists(sha, repo_dir):
             raise RuntimeError(
-                f"SHA {sha[:12]} not found after fetch. "
-                f"The commit may be on a branch not tracked locally, or credentials may be wrong."
+                f"SHA {sha[:12]} not found after fetching all branches. "
+                f"The commit may be on a branch like a release or QA branch — "
+                f"check Cloud Manager for the 'Destination Branch' of this execution "
+                f"and update the Deploy Branch in Repo Settings."
             )
 
     title       = _git("log", "-1", "--format=%s",  sha, repo_dir=repo_dir).strip()

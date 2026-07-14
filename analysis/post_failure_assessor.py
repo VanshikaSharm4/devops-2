@@ -223,17 +223,19 @@ def assess_failed_execution(
         pruning_stats=stage1.pruning_stats,
     )
 
-    os.makedirs("reports", exist_ok=True)
-    out = Path(f"reports/post_failure_{execution_id}.json")
-    with open(out, "w") as f:
-        json.dump(report.model_dump(mode="json"), f, indent=2)
+    if not os.getenv("ARGUS_SKIP_DIAGNOSIS_PERSIST"):
+        os.makedirs("reports", exist_ok=True)
+        out = Path(f"reports/post_failure_{execution_id}.json")
+        with open(out, "w") as f:
+            json.dump(report.model_dump(mode="json"), f, indent=2)
 
-    try:
-        from vector_store.store import ingest_post_failure_report
-        _prog = _get_ctx("program_id", "PROGRAM_ID")
-        ingest_post_failure_report(report, program_id=_prog)
-    except Exception:
-        pass
+    if not os.getenv("ARGUS_SKIP_DIAGNOSIS_PERSIST"):
+        try:
+            from vector_store.store import ingest_post_failure_report
+            _prog = _get_ctx("program_id", "PROGRAM_ID")
+            ingest_post_failure_report(report, program_id=_prog)
+        except Exception:
+            pass
 
     return report, _format_report_markdown(report)
 

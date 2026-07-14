@@ -11,6 +11,9 @@ __pycache__/
 data/cache/
 data/chroma_db/
 data/logs/
+data/ml_dataset/
+data/ml_exports/
+data/predictions/
 reports/
 
 .DS_Store
