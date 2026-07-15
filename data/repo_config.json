@@ -218,5 +218,56 @@
     "git_local_dir": "/Users/vanshika/projects/malaysiaairlines",
     "git_branch": "master",
     "submodules": []
+  },
+  "hdfc": {
+    "program_id": "16360",
+    "pipeline_prod": "43468192",
+    "pipeline_dev": "43472058",
+    "pipelines": [],
+    "org_id": "",
+    "tenant_id": "hdfc",
+    "short": "HDFC",
+    "git_url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankformsmaster/",
+    "git_username": "vanssharma-adobe-com",
+    "git_local_dir": "/Users/vanshika/projects/hdfcbankformsmaster",
+    "git_branch": "stage_and_prod",
+    "splunk_index": "ams_linux-os",
+    "submodules": [
+      {
+        "name": "hdfcbankformscommon",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankformscommon/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankformscommon"
+      },
+      {
+        "name": "hdfcbankpaymentservices",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcbankpaymentservices/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcbankpaymentservices"
+      },
+      {
+        "name": "hdfc-cc-unifiedurl",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfc-cc-unifiedurl/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfc-cc-unifiedurl"
+      },
+      {
+        "name": "hdfcofferengine",
+        "url": "https://git.cloudmanager.adobe.com/hdfcbank/hdfcofferengine/",
+        "local_dir": "/Users/vanshika/projects/submodules/hdfcofferengine"
+      }
+    ]
+  },
+  "bajaj": {
+    "program_id": "25205",
+    "pipeline_prod": "2300570",
+    "pipeline_dev": "1830151",
+    "pipelines": [],
+    "org_id": "",
+    "tenant_id": "baja",
+    "short": "BAJA",
+    "git_url": "https://git.cloudmanager.adobe.com/bajajfinance/bajajfinance/",
+    "git_username": "vanssharma-adobe-com",
+    "git_local_dir": "/Users/vanshika/projects/bajajfinance",
+    "git_branch": "",
+    "splunk_index": "ams_linux-os",
+    "submodules": []
   }
 }

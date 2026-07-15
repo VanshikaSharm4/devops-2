@@ -2856,7 +2856,7 @@ def _render_top_navigation_bar() -> None:
     }}
 
     .selected-customer-name {{
-        max-width: 150px;
+        max-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -3703,10 +3703,17 @@ with st.sidebar:
 
 page = st.session_state.get("page", _PAGE_ROUTES["argus_home"])
 
-# ── No customers configured — show Argus home with setup prompt ──────────────
-if not _CUSTOMERS:
-    render_argus_home()
-    st.info("No customers set up yet — go to **Repo Settings** to add your first customer.")
+# ── No customers configured — allow Repo Settings, block everything else ──────
+if not _CUSTOMERS and page != "Repo Settings":
+    if page in ("Argus Home", _PAGE_ROUTES.get("argus_home", "Argus Home")):
+        render_argus_home()
+    else:
+        st.markdown(
+            f'<div style="margin-top:80px;text-align:center;color:{T["text_muted"]};font-size:1rem">'
+            f'No customers added yet. Go to <b>Repo Settings</b> to add your first customer.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
     st.stop()
 
 # ═══════════════════════════════════════════════════════════
@@ -4119,6 +4126,21 @@ elif page == "Risk Assessment":
                 _step   = str(_dr.get("firstFailedStep", "") or "")
                 _step   = "" if _step == "nan" else _step
                 _start  = str(_dr.get("Deploy Start Time", ""))
+
+                # Correct stale RUNNING status from Splunk cache:
+                # If firstFailedStep is set, the execution failed — it's not running.
+                # If started >2h ago and still shows RUNNING, it's definitely done.
+                if _status == "RUNNING":
+                    if _step:
+                        _status = "FAILED"  # has a failed step → it failed
+                    else:
+                        try:
+                            _start_dt = pd.to_datetime(_start, utc=True)
+                            _age_hrs = (pd.Timestamp.now(tz="UTC") - _start_dt).total_seconds() / 3600
+                            if _age_hrs > 2:
+                                _status = "FINISHED"  # running 2h+ ago → treat as done
+                        except Exception:
+                            pass
                 try:
                     _start_fmt = pd.to_datetime(_start).strftime("%b %d · %H:%M")
                 except Exception:
@@ -6771,32 +6793,18 @@ elif page == "Post-Failure Diagnosis":
                     if hasattr(_pf_report, "model_dump")
                     else _pf_report
                 )
-                # Check if log was unavailable — show error instead of storing fake analysis
+                # Always store result in session state to prevent rerun loop.
+                # Without this, log_unavailable case reruns infinitely (no sentinel stored).
+                st.session_state["post_failure_report"] = _pf_dict
+                st.session_state["post_failure_md"] = _pf_md or ""
                 if isinstance(_pf_dict, dict) and _pf_dict.get("log_unavailable"):
-                    st.markdown(
-                        f'<div style="border:1px solid #F59E0B;border-left:4px solid #F59E0B;'
-                        f'border-radius:8px;padding:12px 16px;margin:8px 0;background:#FFFBEB">'
-                        f'<p style="font-weight:700;color:#92400E;margin:0 0 4px 0">⚠ Log Unavailable</p>'
-                        f'<p style="font-size:13px;color:#78350F;margin:0">'
-                        f'{_pf_dict.get("log_error","Log could not be fetched.")}</p>'
-                        f'<p style="font-size:12px;color:#92400E;margin:6px 0 0 0">'
-                        f'Check Cloud Manager → Pipelines → execution {_pf_eid} → View Log directly.</p>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.session_state["post_failure_md"] = _pf_md
-                    st.session_state["post_failure_report"] = _pf_dict
-                    st.rerun()
+                    pass  # error shown below when rendering results
+                st.rerun()
             except Exception as _pf_err:
-                st.markdown(
-                    f'<div style="border:1px solid #F59E0B;border-left:4px solid #F59E0B;'
-                    f'border-radius:8px;padding:12px 16px;margin:8px 0;background:#FFFBEB">'
-                    f'<p style="font-weight:700;color:#92400E;margin:0 0 4px 0">⚠ Log Analysis Failed</p>'
-                    f'<p style="font-size:13px;color:#78350F;margin:0">{str(_pf_err)[:200]}</p>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+                # Store error sentinel so we don't retry infinitely
+                st.session_state["post_failure_report"] = {"error": str(_pf_err)}
+                st.session_state["post_failure_md"] = ""
+                st.rerun()
 
     if "pinpoint_md" in st.session_state:
         eid       = st.session_state.get("pinpoint_eid", _auto_eid)
@@ -7896,7 +7904,7 @@ elif page == "Repo Settings":
             st.caption("Find these in Adobe Cloud Manager → Your Program → Repositories")
             _gc1, _gc2    = st.columns(2)
             _git_url      = _gc1.text_input("Git URL", value=_prefill.get("git_url",""), placeholder="https://git.cloudmanager.adobe.com/org/repo/")
-            _git_branch   = _gc2.text_input("Deploy Branch", value=_prefill.get("git_branch","master"), placeholder="master or stage_and_prod")
+            _git_branch   = _gc2.text_input("Deploy Branch", value=_prefill.get("git_branch",""), placeholder="e.g. master, stage_and_prod, qa-release — leave blank to show all branches")
             _gc3, _gc4    = st.columns(2)
             _git_user     = _gc3.text_input("Git Username", value=_prefill.get("git_username",""), placeholder="vanssharma-adobe-com")
             _git_pwd      = _gc4.text_input("Git Password", value=_prefill_pwd, type="password",

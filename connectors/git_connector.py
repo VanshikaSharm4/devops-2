@@ -605,7 +605,13 @@ def get_recent_commits(branch: str = "", n: int = 10) -> List[Dict[str, str]]:
                 _branch_ref = "main"
 
     try:
-        out = _git("log", f"-{n}", "--format=%H|%s|%an|%ar", _branch_ref)
+        if _branch_ref:
+            out = _git("log", f"-{n}", "--format=%H|%s|%an|%ar", _branch_ref)
+        else:
+            # No branch configured or found — show most recent commits across ALL branches.
+            # Useful for customers like Bajaj Finance that have many destination branches
+            # (QA, UAT, production, hotfix) with no single "main" branch.
+            out = _git("log", f"-{n}", "--format=%H|%s|%an|%ar", "--all", "--date-order")
     except RuntimeError:
         return []
 

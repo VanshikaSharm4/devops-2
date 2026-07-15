@@ -156,21 +156,44 @@ def compress_bundle_for_risk(bundle_dict: dict) -> dict:
     if _is_subtree:
         commit_profile_dict["is_subtree_import"] = True
         commit_profile_dict["change_intent"]     = "subtree_import"
-        commit_profile_dict["build_risk_override"] = (
-            "LOW — git subtree import of externally tested code. "
-            "Build risk is low by definition; code compiled in source repo. "
-            "Focus only on OSGi integration and package filter conflicts."
+        # Check if the subtree includes risky files that can fail even if source compiled.
+        # pom.xml: dependency conflicts with destination reactor.
+        # dispatcher/conf.d: vhost/config syntax may differ per environment.
+        # ui.config: OSGi configs may not activate in destination AEM version.
+        _risky_subtree = any(
+            any(r in f.lower() for r in ("pom.xml", "dispatcher", "conf.d", "ui.config",
+                                          "filter.xml", "package-lock", "webpack"))
+            for f in changed_files
         )
+        if _risky_subtree:
+            commit_profile_dict["build_risk_override"] = (
+                "Git subtree import — code was compiled in the source repo. "
+                "However this import includes integration-sensitive files "
+                "(dispatcher config, pom.xml, OSGi/ui.config, or webpack). "
+                "These can fail in the destination repo even if the source compiled: "
+                "pom.xml may conflict with the destination reactor, dispatcher configs "
+                "may have environment-specific syntax, OSGi configs may not activate "
+                "under the destination AEM version. "
+                "Use historical data and structural findings to determine actual build risk — "
+                "do not assume LOW just because this is a subtree import."
+            )
+        else:
+            commit_profile_dict["build_risk_override"] = (
+                "Git subtree import of code with no integration-sensitive files. "
+                "Code was compiled in the source repo. "
+                "Build risk is likely low, but use historical data and structural findings "
+                "to confirm — do not override evidence from ChromaDB or environment signals."
+            )
     if _is_bot_commit:
         commit_profile_dict["is_automated_commit"] = True
         commit_profile_dict["build_risk_override"] = (
-            "VERY LOW — automated CI/CD commit (Jenkins or bot). "
-            "No meaningful developer code change. Max confidence: 20%."
+            "Automated CI/CD commit (Jenkins or bot) — no meaningful developer code change. "
+            "Build risk is very likely low. Confidence should be low (under 25%)."
         )
     if _is_empty:
         commit_profile_dict["is_empty_commit"] = True
         commit_profile_dict["build_risk_override"] = (
-            "NEAR ZERO — no files changed. No commit-caused build risk possible."
+            "No files changed in this commit — no commit-caused build risk is possible."
         )
 
     # Submodule pointer-only commit (parent has no app code)
