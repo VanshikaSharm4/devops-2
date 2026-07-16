@@ -23,6 +23,34 @@ st.set_page_config(
 
 _TOPBAR_HEIGHT_PX = 64
 _TOPBAR_HEIGHT_CSS = f"{_TOPBAR_HEIGHT_PX}px"
+# Left inset for sidebar nav icons — aligns with topbar hamburger icon
+# (topbar padding 16px + hamburger button padding 8px)
+_SIDEBAR_LEFT_GUTTER = "24px"
+_SIDEBAR_OPEN_LEFT_MARGIN = "20px"
+
+_SIDEBAR_ACTIVE_HIGHLIGHT_CSS = """
+[data-testid="stSidebar"] [data-testid="element-container"]:has(button[kind="primary"]:not([kind="headerNoPadding"])),
+[data-testid="stSidebar"] .element-container:has(button[kind="primary"]:not([kind="headerNoPadding"])) {
+    width: 100% !important;
+    max-width: 100% !important;
+    align-self: stretch !important;
+    background: var(--sidebar-active) !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"]:has(button[kind="primary"]:not([kind="headerNoPadding"])),
+[data-testid="stSidebar"] .stButton:has(button[kind="primary"]:not([kind="headerNoPadding"])) {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton"]:has(button[kind="primary"]:not([kind="headerNoPadding"])) > div,
+[data-testid="stSidebar"] .stButton:has(button[kind="primary"]:not([kind="headerNoPadding"])) > div {
+    width: 100% !important;
+}
+[data-testid="stSidebar"] button[kind="primary"]:not([kind="headerNoPadding"]) {
+    background: transparent !important;
+    width: 100% !important;
+    max-width: 100% !important;
+}
+"""
 
 # ── Customer registry — loaded from data/customer_config.json ─────────────────
 from analysis.paths import customer_config_path as _customer_config_path, secrets_path as _secrets_path_fn, repo_config_path as _repo_config_path, cache_dir as _cache_dir, splunk_exports_dir as _splunk_exports_dir
@@ -166,6 +194,48 @@ try:
 except Exception:
     pass
 
+# Restore per-user Splunk LDAP credentials from encrypted vault
+try:
+    from analysis.splunk_credentials import restore_splunk_session, session_ldap_short
+    from analysis.customer_context import has_splunk_credentials
+
+    # Durable identity across restarts/fresh sessions: a 30-day browser cookie
+    # holding the (non-secret) LDAP short id. The password stays encrypted in the
+    # server-side vault; the cookie just says which vault entry to load.
+    _cookie_short = ""
+    try:
+        _cookie_short = st.context.cookies.get("argus_splunk_user", "") or ""
+    except Exception:
+        _cookie_short = ""
+
+    _splunk_session_ok = restore_splunk_session(st.session_state, st.query_params, _cookie_short)
+    st.session_state["_splunk_connected"] = _splunk_session_ok or has_splunk_credentials()
+except Exception:
+    st.session_state["_splunk_connected"] = False
+
+# Write/refresh or delete the durable identity cookie (on the parent document).
+# Runs every rerun so it survives st.rerun() and keeps the 30-day window fresh.
+try:
+    import streamlit.components.v1 as _cookie_components
+    from analysis.splunk_credentials import session_ldap_short as _sls
+
+    if st.session_state.pop("_splunk_cookie_clear", False):
+        _cookie_components.html(
+            "<script>parent.document.cookie="
+            "'argus_splunk_user=; max-age=0; path=/; SameSite=Lax';</script>",
+            height=0,
+        )
+    else:
+        _ck_short = _sls(st.session_state)
+        if st.session_state.get("_splunk_connected") and _ck_short:
+            _cookie_components.html(
+                "<script>parent.document.cookie="
+                f"'argus_splunk_user={_ck_short}; max-age=2592000; path=/; SameSite=Lax';</script>",
+                height=0,
+            )
+except Exception:
+    pass
+
 # ── Theme tokens ──────────────────────────────────────────────────────────────
 # This is a Streamlit application, so Tailwind utility classes are unavailable.
 # Keep all visual values in one token map so every component follows the selected
@@ -234,8 +304,13 @@ if _IS_DARK:
     color: {T['text']} !important;
     -webkit-text-fill-color: {T['text']} !important;
 }}
-[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-executions-table-marker) [data-testid="stButton"] > button,
-[data-testid="stVerticalBlockBorderWrapper"]:has(.risk-commits-table-marker) [data-testid="stButton"] > button {{
+/* Secondary buttons in the main area (e.g. the SHA / execution-ID cells that
+   form the first column of the Risk Assessment & Post-Failure tables) default
+   to a grey label that is unreadable on the dark surface. Force a light label. */
+[data-testid="stMain"] button[data-testid="stBaseButton-secondary"],
+[data-testid="stMain"] button[data-testid="stBaseButton-secondary"] *,
+[data-testid="stMain"] button[data-testid="baseButton-secondary"],
+[data-testid="stMain"] button[data-testid="baseButton-secondary"] * {{
     color: {T['text']} !important;
     -webkit-text-fill-color: {T['text']} !important;
 }}
@@ -461,6 +536,20 @@ html, body, [class*="css"] {{
 [data-testid="stSidebar"] .element-container,
 [data-testid="stSidebar"] [data-testid="element-container"] {{
     margin-bottom: 0 !important;
+    align-items: stretch !important;
+    justify-content: flex-start !important;
+}}
+[data-testid="stSidebar"] [data-testid="stButton"],
+[data-testid="stSidebar"] .stButton {{
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+}}
+[data-testid="stSidebar"] [data-testid="stButton"] > div,
+[data-testid="stSidebar"] .stButton > div {{
+    width: 100% !important;
+    justify-content: flex-start !important;
 }}
 /* Selectbox always fully clickable and elevated */
 [data-testid="stSidebar"] [data-testid="stSelectbox"],
@@ -553,7 +642,7 @@ iframe[style*="height: 0"] {{
     justify-content: flex-start !important;
     font-size: 0.78rem !important;
     font-weight: 400 !important;
-    padding: 0 0.75rem !important;
+    padding: 0 0 0 {_SIDEBAR_LEFT_GUTTER} !important;
     width: 100% !important;
     min-width: 0 !important;
     margin: 0 !important;
@@ -564,6 +653,8 @@ iframe[style*="height: 0"] {{
     text-overflow: ellipsis !important;
     transition: color 0.1s, border-color 0.1s !important;
     line-height: 1.4 !important;
+    border-radius: 0 !important;
+    box-sizing: border-box !important;
 }}
 [data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
 [data-testid="stSidebar"] button [data-testid="stIconMaterial"],
@@ -595,12 +686,14 @@ iframe[style*="height: 0"] {{
 /* All sidebar buttons — flat, no box, no border radius */
 [data-testid="stSidebar"] button[kind="secondary"],
 [data-testid="stSidebar"] button[kind="primary"],
-[data-testid="stSidebar"] button {{
+[data-testid="stSidebar"] button,
+[data-testid="stSidebar"] button[data-testid^="stBaseButton"] {{
     height: 30px !important;
     min-height: 30px !important;
-    padding: 0 0 0 12px !important;
+    padding: 0 0 0 {_SIDEBAR_LEFT_GUTTER} !important;
     text-align: left !important;
     justify-content: flex-start !important;
+    align-items: center !important;
     gap: 0.55rem !important;
     white-space: nowrap !important;
     overflow: hidden !important;
@@ -611,7 +704,7 @@ iframe[style*="height: 0"] {{
     border-right: none !important;
     border-top: none !important;
     border-bottom: none !important;
-    border-radius: 4px !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     background: transparent !important;
     outline: none !important;
@@ -619,9 +712,26 @@ iframe[style*="height: 0"] {{
     transition: background 0.1s ease, color 0.1s ease !important;
     width: 100% !important;
 }}
+[data-testid="stSidebar"] button[data-testid^="stBaseButton"] > div,
+[data-testid="stSidebar"] button[data-testid^="stBaseButton"] [data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] [data-testid="stButton"] > button > div,
+[data-testid="stSidebar"] [data-testid="stButton"] > button [data-testid="stMarkdownContainer"] {{
+    flex: 0 1 auto !important;
+    width: auto !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+}}
+[data-testid="stSidebar"] button[data-testid^="stBaseButton"] p,
+[data-testid="stSidebar"] [data-testid="stButton"] > button p {{
+    text-align: left !important;
+    margin: 0 !important;
+    width: auto !important;
+}}
 [data-testid="stSidebar"] button[kind="primary"] {{
     color: #1473E6 !important;
-    background: #EEF2FF !important;
+    background: transparent !important;
     border-left: 2px solid #1473E6 !important;
     font-weight: 600 !important;
 }}
@@ -1592,24 +1702,30 @@ st.markdown(f"""
     border: none !important;
 }}
 [data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] [data-testid="stButton"] > button,
 [data-testid="stSidebar"] button[kind="secondary"],
 [data-testid="stSidebar"] button[kind="primary"] {{
     min-height: 2.75rem !important;
-    margin-block: 0.125rem !important;
-    padding-inline: 0.75rem !important;
+    margin-block: 0 !important;
+    padding: 0 0 0 {_SIDEBAR_LEFT_GUTTER} !important;
     border: 0 !important;
-    border-radius: 0.75rem !important;
+    border-radius: 0 !important;
     color: var(--sidebar-text) !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
 }}
 [data-testid="stSidebar"] button[kind="secondary"]:hover {{
     background: {T["sidebar_nav_hover"]} !important;
     color: var(--text) !important;
 }}
 [data-testid="stSidebar"] button[kind="primary"] {{
-    background: var(--sidebar-active) !important;
+    background: transparent !important;
     color: var(--accent) !important;
-    box-shadow: inset 0 0 0 0.0625rem var(--border-soft) !important;
+    box-shadow: none !important;
 }}
+{_SIDEBAR_ACTIVE_HIGHLIGHT_CSS}
 [data-testid="stSidebar"] button:focus-visible,
 [data-testid="stMain"] button:focus-visible {{
     outline: 0.125rem solid var(--accent) !important;
@@ -2557,13 +2673,16 @@ def _run_splunk_refresh_bg():
     """Fetch fresh Splunk data in a background thread, save to cache."""
     global _splunk_refresh_state
     try:
+        from analysis.customer_context import get_program_id
         from analysis.ingest import load_data, _save_cache
-        _pid = int(os.getenv("PROGRAM_ID", "19905"))
+
+        _pid_str = get_program_id() or os.getenv("PROGRAM_ID", "19905")
+        _pid = int(_pid_str)
         pipeline_df, failed_df, failed_steps_df, share_map = load_data(
             program_id=_pid, force_refresh=True,
-            skip_share_names=False,  # Failure Pinpoint needs share names to fetch logs
+            skip_share_names=False,
         )
-        _save_cache(pipeline_df, failed_df, failed_steps_df, share_map)
+        _save_cache(pipeline_df, failed_df, failed_steps_df, share_map, program_id=_pid)
         _splunk_refresh_state["done"]  = True
         _splunk_refresh_state["error"] = None
     except Exception as e:
@@ -2574,19 +2693,79 @@ def _run_splunk_refresh_bg():
 
 def _maybe_start_bg_refresh(force: bool = False):
     """Start background Splunk refresh if not running and cache is stale/empty."""
-    _pid_key = str(os.getenv("PROGRAM_ID", "unknown"))
+    import contextvars as _cv
+    from analysis.customer_context import get_program_id
+    from analysis.ingest import _cache_is_fresh, _use_splunk_api
+
+    _pid_key = get_program_id() or str(os.getenv("PROGRAM_ID", "unknown"))
+    _ctx_snapshot = _cv.copy_context()
+
+    def _thread_target():
+        _ctx_snapshot.run(_run_splunk_refresh_bg)
+
     with _get_splunk_lock(_pid_key):
         if _splunk_refresh_state["running"]:
             return
         try:
-            from analysis.ingest import _cache_is_fresh, _use_splunk_api, CACHE_FILE
-            if _use_splunk_api() and (force or not _cache_is_fresh()):
+            if _use_splunk_api() and (force or not _cache_is_fresh(int(_pid_key) if _pid_key.isdigit() else None)):
                 _splunk_refresh_state["running"] = True
                 _splunk_refresh_state["done"]    = False
-                t = _threading.Thread(target=_run_splunk_refresh_bg, daemon=True)
+                t = _threading.Thread(target=_thread_target, daemon=True)
                 t.start()
         except Exception:
             pass
+
+
+def _render_repo_settings_form_theme():
+    """Dark-mode overrides for Repo Settings form inputs (shared across tabs)."""
+    if not _IS_DARK:
+        return
+    _placeholder = "#6B7280"  # muted grey — distinct from filled value (#0F172A)
+    st.markdown(
+        "<style>"
+        "[data-testid='stMain'] [data-testid='stTextInput'] label,"
+        "[data-testid='stMain'] [data-testid='stTextInput'] input,"
+        "[data-testid='stMain'] [data-testid='stTextInput'] [data-baseweb='input'],"
+        "[data-testid='stMain'] [data-testid='stNumberInput'] input,"
+        "[data-testid='stMain'] [data-testid='stTextArea'] textarea {"
+        "color:#0F172A !important;"
+        "-webkit-text-fill-color:#0F172A !important;"
+        "}"
+        "[data-testid='stMain'] [data-testid='stSelectbox'] label,"
+        "[data-testid='stMain'] [data-testid='stSelectbox'] > div > div,"
+        "[data-testid='stMain'] [data-testid='stSelectbox'] [data-baseweb='select'],"
+        "[data-testid='stMain'] [data-testid='stSelectbox'] [data-baseweb='select'] span,"
+        "[data-testid='stMain'] [data-testid='stSelectbox'] [data-baseweb='select'] div[role='button'] {"
+        "color:#FFFFFF !important;"
+        "-webkit-text-fill-color:#FFFFFF !important;"
+        "}"
+        "[data-testid='stMain'] [data-testid='stTextInput'] input::placeholder,"
+        "[data-testid='stMain'] [data-testid='stTextInput'] input::-webkit-input-placeholder,"
+        "[data-testid='stMain'] [data-testid='stTextInput'] [data-baseweb='input']::placeholder,"
+        "[data-testid='stMain'] [data-testid='stNumberInput'] input::placeholder,"
+        "[data-testid='stMain'] [data-testid='stTextArea'] textarea::placeholder,"
+        "[data-testid='stMain'] [data-testid='stTextArea'] textarea::-webkit-input-placeholder {"
+        f"color:{_placeholder} !important;"
+        f"-webkit-text-fill-color:{_placeholder} !important;"
+        "opacity:1 !important;"
+        "}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_splunk_not_configured_banner():
+    """Inline hint when live Splunk is unavailable — points to Customer Information tab."""
+    if st.session_state.get("_splunk_connected"):
+        return
+    st.markdown(
+        f'<div style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.28);'
+        f'border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:{T["amber"]}">'
+        f'<b>Splunk not connected</b> — showing cached or exported data only. '
+        f'Configure your LDAP credentials in <b>Repo Settings → Customer Information</b> for live pipeline data.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ── Shared data ───────────────────────────────────────────────────────────────
@@ -2641,6 +2820,16 @@ def get_data_or_stop():
     message and stops rendering — never passes an empty DataFrame to pages.
     """
     _pid = _active_customer.get("program_id") or "19905"
+    # If a background Splunk refresh just wrote fresh data to disk, drop the
+    # process-global memoized tuple so this page (and every other) re-reads it.
+    # Without this, load_splunk_data keeps returning the old in-memory result
+    # even though fresh data has landed — the main non-contextvar staleness path.
+    if _splunk_refresh_state.get("done"):
+        _splunk_refresh_state["done"] = False
+        try:
+            load_splunk_data.clear()
+        except Exception:
+            pass
     pdf, fdf, smap, src = load_splunk_data(_pid)
     if pdf.empty and src == "loading":
         _maybe_start_bg_refresh(force=True)
@@ -3119,11 +3308,6 @@ def _render_top_navigation_bar() -> None:
                 <div class="customer-list-container" id="customer-list-container"></div>
             </div>
         </div>
-        <button class="icon-nav-btn" id="topbar-refresh-btn"
-                title="{_cache_tooltip}" style="position:relative">
-            <span style="position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:{_cache_col}"></span>
-            <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-        </button>
     </div>
     """
 
@@ -3437,29 +3621,6 @@ def _render_top_navigation_bar() -> None:
             return false;
         }}
 
-        const topbarRefreshBtn = parentDoc.getElementById('topbar-refresh-btn');
-        if (topbarRefreshBtn) {{
-            topbarRefreshBtn.onclick = (e) => {{
-                e.preventDefault();
-                e.stopPropagation();
-                closeDropdown();
-                // Find refresh button via its marker span — works open or collapsed
-                const marker = parentDoc.getElementById('sidebar-refresh-marker');
-                if (marker) {{
-                    const container = marker.closest('[data-testid="element-container"]')
-                                   || marker.parentElement;
-                    const prevContainer = container && container.previousElementSibling;
-                    const btn = prevContainer && prevContainer.querySelector('button');
-                    if (btn) {{ btn.click(); return; }}
-                }}
-                // Fallback: search by help text title
-                const allBtns = parentDoc.querySelectorAll('button[title="Refresh data"]');
-                if (allBtns.length > 0) {{ allBtns[0].click(); return; }}
-                // Last fallback: search by text
-                clickSidebarBtn(['Refresh']);
-            }};
-        }}
-
         // Account avatar dropdown toggle
         const avatar = parentDoc.getElementById('user-avatar-container');
         if (avatar) {{
@@ -3544,39 +3705,83 @@ def _render_sidebar():
     _open = st.session_state.get("sb_open", True)
     _page = st.session_state.get("page", "Overview")
     _w    = "208px" if _open else "56px"
-    _collapsed_css = """
-[data-testid="stSidebar"] .stButton > button,
-[data-testid="stSidebar"] button[kind="secondary"],
-[data-testid="stSidebar"] button[kind="primary"],
-[data-testid="stSidebar"] button:not([title="Toggle sidebar"]):not([kind="headerNoPadding"]),
-[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) {
-    justify-content: center !important;
-    text-align: center !important;
-    gap: 0 !important;
-    padding: 0 !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    border-left-width: 0 !important;
-}
-[data-testid="stSidebar"] button:not([kind="headerNoPadding"]) > span,
-[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) > span {
-    width: 100% !important;
+    _sidebar_left_margin = _SIDEBAR_OPEN_LEFT_MARGIN if _open else "0"
+
+    _nav_btn = (
+        '[data-testid="stSidebar"] .stButton > button:not([kind="headerNoPadding"]),'
+        '[data-testid="stSidebar"] [data-testid="stButton"] > button:not([kind="headerNoPadding"]),'
+        '[data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"])'
+    )
+
+    _align_css = f"""
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"],
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"],
+[data-testid="stSidebar"] [data-testid="element-container"],
+[data-testid="stSidebar"] [data-testid="stButton"],
+[data-testid="stSidebar"] .stButton {{
+    align-items: stretch !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+}}
+{_nav_btn} {{
     display: flex !important;
-    justify-content: center !important;
+    flex-direction: row !important;
+    justify-content: flex-start !important;
     align-items: center !important;
-}
-[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
-[data-testid="stSidebar"] button:not([kind="headerNoPadding"]) [data-testid="stIconMaterial"],
-[data-testid="stSidebar"][data-testid="stSidebar"] button[data-testid^="stBaseButton"]:not([kind="headerNoPadding"]) [data-testid="stIconMaterial"] {
-    margin: 0 auto !important;
-    font-size: 1.35rem !important;
-    width: 1.35rem !important;
-    height: 1.35rem !important;
-    line-height: 1 !important;
-    text-align: center !important;
-    transform: translateX(4px) !important;
-}
+    text-align: left !important;
+    width: 100% !important;
+    margin: 0 !important;
+    gap: 0.55rem !important;
+    padding-left: {_SIDEBAR_LEFT_GUTTER} !important;
+    padding-right: 0 !important;
+    border-radius: 0 !important;
+    box-sizing: border-box !important;
+}}
+{_nav_btn} > div,
+{_nav_btn} > span,
+{_nav_btn} [data-testid="stMarkdownContainer"] {{
+    flex: 0 1 auto !important;
+    width: auto !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    display: inline-flex !important;
+    justify-content: flex-start !important;
+    align-items: center !important;
+    text-align: left !important;
+}}
+{_nav_btn} p {{
+    text-align: left !important;
+    margin: 0 !important;
+    width: auto !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}}
+{_nav_btn} [data-testid="stIconMaterial"] {{
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+    transform: none !important;
+}}
+[data-testid="stSidebar"] .sidebar-cache-status {{
+    padding-left: {_SIDEBAR_LEFT_GUTTER} !important;
+    text-align: left !important;
+}}
+"""
+
+    _collapsed_css = _align_css + f"""
+{_nav_btn}:not([kind="headerNoPadding"]) > span > p,
+{_nav_btn}:not([kind="headerNoPadding"]) > span > div:not(:has([data-testid="stIconMaterial"])),
+{_nav_btn}:not([kind="headerNoPadding"]) [data-testid="stMarkdownContainer"]:not(:has([data-testid="stIconMaterial"])) {{
+    display: none !important;
+    width: 0 !important;
+    max-width: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+}}
 """ if not _open else ""
+
+    _expanded_nav_css = _align_css if _open else ""
 
     st.markdown(f"""
 <style>
@@ -3584,6 +3789,7 @@ def _render_sidebar():
     min-width: {_w} !important;
     max-width: {_w} !important;
     width:     {_w} !important;
+    margin-left: {_sidebar_left_margin} !important;
 }}
 [data-testid="stSidebar"] button[title="Toggle sidebar"] {{
     display: none !important;
@@ -3598,6 +3804,13 @@ def _render_sidebar():
 [data-testid="stSidebar"] button[kind="secondary"],
 [data-testid="stSidebar"] button[kind="primary"] {{
     margin-block: 0 !important;
+}}
+[data-testid="stSidebar"] [data-testid="element-container"],
+[data-testid="stSidebar"] .element-container {{
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
 }}
 [data-testid="stSidebar"] [data-testid="element-container"]:has(#sidebar-toggle-bridge-marker),
 [data-testid="stSidebar"] .element-container:has(#sidebar-toggle-bridge-marker),
@@ -3625,7 +3838,9 @@ def _render_sidebar():
     padding: 0 !important;
     opacity: 0 !important;
 }}
+{_SIDEBAR_ACTIVE_HIGHLIGHT_CSS}
 {_collapsed_css}
+{_expanded_nav_css}
 </style>
 <span id="sidebar-toggle-bridge-marker"></span>
 """, unsafe_allow_html=True)
@@ -3646,7 +3861,9 @@ def _render_sidebar():
             key=f"_nav_{_p}",
             use_container_width=True,
             type="primary" if _active else "secondary",
-            help=_p,
+            # Only show the hover tooltip when collapsed — when expanded the
+            # label is already visible and the tooltip just duplicates it.
+            help=None if _open else _p,
             icon=_icon,
         ):
             _navigate_to(_p)
@@ -3654,8 +3871,9 @@ def _render_sidebar():
 
     # ── Theme toggle ─────────────────────────────────────────────────────────
     _theme_label = "Dark mode" if st.session_state["ui_theme"] == "light" else "Light mode"
-    if st.button(_theme_label, key="_theme_switch",
-                 help=f"Switch to {_theme_label.lower()}",
+    if st.button(_theme_label if _open else " ",
+                 key="_theme_switch",
+                 help=None if _open else f"Switch to {_theme_label.lower()}",
                  icon=":material/dark_mode:" if st.session_state["ui_theme"] == "light" else ":material/light_mode:",
                  use_container_width=True):
         st.session_state["ui_theme"] = "dark" if st.session_state["ui_theme"] == "light" else "light"
@@ -3664,16 +3882,32 @@ def _render_sidebar():
     # ── Cache status + refresh ────────────────────────────────────────────────
     try:
         from analysis.ingest import cache_info, clear_cache
-        _info = cache_info()
+
+        # Resolve the CURRENT customer's program so cache status reflects what's
+        # on screen (not the import-time default).
+        try:
+            _cache_pid = int(_active_customer.get("program_id") or 0) or None
+        except (TypeError, ValueError):
+            _cache_pid = None
+
+        def _fmt_age(mins: float) -> str:
+            m = int(round(mins))
+            if m < 60:
+                return f"{m} min"
+            if m < 1440:
+                return f"{m // 60}h {m % 60}m"
+            return f"{m // 1440}d {(m % 1440) // 60}h"
+
+        _info = cache_info(_cache_pid)
         if _info.get("exists") and _info.get("fresh"):
-            _sc, _st2 = "#30A46C", f"Cache valid — {_info['age_min']} min"
+            _sc, _st2 = "#30A46C", f"Cache valid — {_fmt_age(_info['age_min'])}"
         elif _info.get("exists"):
-            _sc, _st2 = "#E79D13", f"Cache stale — {_info['age_min']} min"
+            _sc, _st2 = "#E79D13", f"Cache stale — {_fmt_age(_info['age_min'])}"
         else:
             _sc, _st2 = "#889098", "No cache"
         if _open:
             st.markdown(
-                f'<p class="sidebar-cache-status" style="padding:0 0.75rem;margin:0 0 0.25rem;white-space:nowrap;overflow:hidden">'
+                f'<p class="sidebar-cache-status" style="padding:0;margin:0 0 0.25rem;white-space:nowrap;overflow:hidden">'
                 f'<span style="display:inline-block;width:0.375rem;height:0.375rem;border-radius:9999px;'
                 f'background:{_sc};margin-right:0.25rem;vertical-align:middle"></span>{_st2}</p>',
                 unsafe_allow_html=True,
@@ -3682,13 +3916,38 @@ def _render_sidebar():
             "Refresh" if _open else " ",
             key="_refresh",
             use_container_width=True,
-            help="Refresh data",
+            help=None if _open else "Refresh data",
             icon=":material/refresh:",
         ):
-            clear_cache()
+            clear_cache(_cache_pid)
             st.cache_data.clear()
             st.cache_resource.clear()
+            st.session_state.pop("_refresh_error", None)
+            # Fetch synchronously in THIS (credentialed) thread so the result is
+            # definitive and any Splunk error surfaces immediately — rather than
+            # firing a background thread whose failure is invisible.
+            try:
+                from analysis.customer_context import has_splunk_credentials
+                from analysis.ingest import load_data
+
+                if has_splunk_credentials():
+                    with st.spinner("Fetching fresh data from Splunk…"):
+                        load_data(
+                            program_id=_cache_pid,
+                            force_refresh=True,
+                            skip_share_names=False,
+                            stale_while_revalidate=False,
+                        )
+            except Exception as _re:
+                st.session_state["_refresh_error"] = str(_re)[:300]
             st.rerun()
+        if st.session_state.get("_refresh_error"):
+            st.markdown(
+                f'<p style="padding:0 0.75rem;margin:0 0 0.25rem;font-size:0.6rem;'
+                f'color:#E79D13;white-space:normal;line-height:1.4">'
+                f'Refresh failed: {st.session_state["_refresh_error"]}</p>',
+                unsafe_allow_html=True,
+            )
         # Hidden marker so topbar JS can find refresh button regardless of open/collapsed state
         st.markdown('<span id="sidebar-refresh-marker"></span>', unsafe_allow_html=True)
     except Exception:
@@ -3727,6 +3986,8 @@ if page == "Argus Home":
 # ═══════════════════════════════════════════════════════════
 elif page == "Overview":
     section_header("Pipeline Health Overview", "Last 30 days &middot; Live from Splunk")
+
+    _render_splunk_not_configured_banner()
 
     # Kick off background Splunk refresh (no-op if already fresh or running)
     _maybe_start_bg_refresh()
@@ -3786,13 +4047,20 @@ elif page == "Overview":
             unsafe_allow_html=True,
         )
     elif _data_source == "stale_cache":
+        if not st.session_state.get("_splunk_connected"):
+            _stale_msg = ('<b style="font-weight:600;color:' + T["text"] + '">Stale cache</b> — Splunk is not '
+                          'connected, so this is old cached data. Add your LDAP credentials in '
+                          '<b>Repo Settings → Customer Information</b> to load live runs.')
+        else:
+            _stale_msg = ('<b style="font-weight:600;color:' + T["text"] + '">Stale cache</b> — a live Splunk '
+                          'fetch is running in the background (or Splunk was unreachable — check VPN). '
+                          'Refresh from the sidebar once it completes.')
         st.markdown(
             f'<div style="background:rgba(37,99,235,0.035);border:1px solid rgba(37,99,235,0.14);'
             f'border-radius:6px;padding:5px 10px;margin-bottom:14px;'
             f'display:flex;align-items:center;gap:6px">'
             f'<span style="font-size:11px;color:{T["text_sub"]}">'
-            f'<b style="font-weight:600;color:{T["text"]}">Stale cache</b> — Splunk API was unreachable. Showing cached data. '
-            f'Connect to VPN and refresh to get live data.'
+            f'{_stale_msg}'
             f'</span></div>',
             unsafe_allow_html=True,
         )
@@ -4022,7 +4290,16 @@ elif page == "Failure Analysis":
             with st.expander("View full markdown report"):
                 st.markdown(Path(f"reports/latest_report_{_active_customer.get('program_id', '19905') or '19905'}.md").read_text())
     else:
-        st.info("No saved report found. Run an analysis to generate one.")
+        if _IS_DARK:
+            st.markdown(
+                '<div style="border-radius:3px;padding:10px 14px;font-size:0.83rem;'
+                'background:#FAFAFA;border:1px solid #E5E7EB;color:#111827">'
+                'No saved report found. Run an analysis to generate one.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("No saved report found. Run an analysis to generate one.")
 
     if st.button("Run Fresh Analysis", type="primary"):
         with st.spinner("Running AI analysis..."):
@@ -6698,10 +6975,17 @@ elif page == "Post-Failure Diagnosis":
             pass
 
     if _data_source in ("csv_fallback_network", "csv", "stale_cache"):
+        if not st.session_state.get("_splunk_connected"):
+            _off_msg = ('<b>Offline mode</b> — Splunk is not connected, so this is old cached/exported '
+                        'data. Add your LDAP credentials in <b>Repo Settings → Customer Information</b> '
+                        'to load live pipeline runs.')
+        else:
+            _off_msg = ('<b>Offline mode</b> — showing cached data while a live Splunk fetch runs in the '
+                        'background (or Splunk was unreachable — check VPN). Use the sidebar Refresh once it completes.')
         st.markdown(
             f'<div style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.3);'
             f'border-radius:8px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:{T["amber"]}">'
-            f'⚠️ &nbsp;<b>Offline mode</b> — showing cached/CSV data. Connect to VPN for live results.'
+            f'⚠️ &nbsp;{_off_msg}'
             f'</div>', unsafe_allow_html=True,
         )
 
@@ -7179,17 +7463,14 @@ elif page == "Memory Explorer":
                 for step, grp in df.groupby("step"):
                     fig_scatter.add_trace(go.Scatter(
                         x=grp["x"], y=grp["y"],
-                        mode="markers+text",
+                        mode="markers",
                         name=step,
                         marker=dict(
-                            size=14,
+                            size=10,
                             color=step_colors.get(step, T["gray"]),
                             line=dict(width=1.5, color="#FFFFFF"),
                             opacity=0.9,
                         ),
-                        text=grp["execution_id"],
-                        textposition="top center",
-                        textfont=dict(size=9, color=T["text_sub"]),
                         hovertext=grp["label"],
                         hoverinfo="text",
                         hoverlabel=dict(
@@ -7288,10 +7569,17 @@ elif page == "Memory Explorer":
                         'Dark = different failure class.</p>',
                         unsafe_allow_html=True,
                     )
-                    # Cosine similarity matrix
+                    # Cosine similarity matrix. Sanitize first: some records may
+                    # have missing/NaN embeddings, and a low-precision dtype can
+                    # overflow in the matmul — force float64 and scrub NaN/inf so
+                    # the product is well-defined (avoids divide/overflow warnings).
+                    embeddings = np.nan_to_num(
+                        np.asarray(embeddings, dtype=np.float64),
+                        nan=0.0, posinf=0.0, neginf=0.0,
+                    )
                     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
                     normed = embeddings / np.where(norms == 0, 1, norms)
-                    sim_matrix = normed @ normed.T
+                    sim_matrix = np.clip(normed @ normed.T, -1.0, 1.0)
 
                     labels = [
                         f"{m.get('execution_id','?')[:12]}<br>{m.get('step','')}"
@@ -7329,6 +7617,32 @@ elif page == "Memory Explorer":
                 section_label(f"All {fm_count} Records in failure_memory")
 
                 # Filter controls
+                if _IS_DARK:
+                    st.markdown(
+                        '<span id="mem-explorer-filters-marker" style="display:none"></span>'
+                        "<style>"
+                        "[data-testid='stVerticalBlock']:has(#mem-explorer-filters-marker) "
+                        "[data-testid='stSelectbox'] > div > div,"
+                        "[data-testid='stVerticalBlock']:has(#mem-explorer-filters-marker) "
+                        "[data-testid='stSelectbox'] [data-baseweb='select'],"
+                        "[data-testid='stVerticalBlock']:has(#mem-explorer-filters-marker) "
+                        "[data-testid='stSelectbox'] [data-baseweb='select'] span,"
+                        "[data-testid='stVerticalBlock']:has(#mem-explorer-filters-marker) "
+                        "[data-testid='stSelectbox'] [data-baseweb='select'] div[role='button'],"
+                        "[data-testid='element-container']:has(#mem-explorer-filters-marker) "
+                        "~ [data-testid='element-container'] [data-testid='stSelectbox'] > div > div,"
+                        "[data-testid='element-container']:has(#mem-explorer-filters-marker) "
+                        "~ [data-testid='element-container'] [data-testid='stSelectbox'] [data-baseweb='select'],"
+                        "[data-testid='element-container']:has(#mem-explorer-filters-marker) "
+                        "~ [data-testid='element-container'] [data-testid='stSelectbox'] [data-baseweb='select'] span,"
+                        "[data-testid='element-container']:has(#mem-explorer-filters-marker) "
+                        "~ [data-testid='element-container'] [data-testid='stSelectbox'] [data-baseweb='select'] div[role='button'] {"
+                        "color:#FFFFFF !important;"
+                        "-webkit-text-fill-color:#FFFFFF !important;"
+                        "}"
+                        "</style>",
+                        unsafe_allow_html=True,
+                    )
                 fc1, fc2 = st.columns(2, gap="medium")
                 with fc1:
                     filter_step = st.selectbox(
@@ -7823,47 +8137,136 @@ elif page == "Static Analysis":
 # PAGE: Customer Onboarding
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "Repo Settings":
-    section_header("Customer Onboarding", "Add or configure a customer — all settings saved securely on the server")
+    section_header("Customer Onboarding", "Configure Splunk access and customer repositories")
 
-    if _IS_DARK:
-        st.markdown(
-            "<style>"
-            "[data-testid='stTextInput'] label,"
-            "[data-testid='stTextInput'] input,"
-            "[data-testid='stTextInput'] [data-baseweb='input'],"
-            "[data-testid='stNumberInput'] input,"
-            "[data-testid='stTextArea'] textarea {"
-            "color:#0F172A !important;"
-            "-webkit-text-fill-color:#0F172A !important;"
-            "}"
-            "[data-testid='stSelectbox'] label,"
-            "[data-testid='stSelectbox'] > div > div,"
-            "[data-testid='stSelectbox'] [data-baseweb='select'],"
-            "[data-testid='stSelectbox'] [data-baseweb='select'] span,"
-            "[data-testid='stSelectbox'] [data-baseweb='select'] div[role='button'] {"
-            "color:#FFFFFF !important;"
-            "-webkit-text-fill-color:#FFFFFF !important;"
-            "}"
-            "[data-testid='stTextInput'] input::placeholder,"
-            "[data-testid='stTextInput'] [data-baseweb='input']::placeholder,"
-            "[data-testid='stTextArea'] textarea::placeholder {"
-            "color:#000000 !important;"
-            "-webkit-text-fill-color:#000000 !important;"
-            "opacity:1 !important;"
-            "}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
+    _render_repo_settings_form_theme()
 
     st.caption(
-        "Passwords are stored in `data/.secrets.json` (gitignored, server-only). "
-        "Customer config saved to `data/customer_config.json`. "
-        "After saving, the customer appears in the sidebar selector immediately."
+        "Git passwords → `data/.secrets.json` (per customer). "
+        "Splunk LDAP passwords → `data/.splunk_vault/` (encrypted, per user). "
+        "Neither file is committed to git."
     )
 
-    # ── Tab: Add New / Edit Existing ─────────────────────────────────────────
     _existing_names = list(_load_customers().keys())
-    _ob_tab, _list_tab = st.tabs(["Add / Edit Customer", "All Customers"])
+    _info_tab, _ob_tab, _list_tab = st.tabs([
+        "Customer Information",
+        "Add / Edit Customer",
+        "All Customers",
+    ])
+
+    with _info_tab:
+        from analysis.splunk_credentials import (
+            activate_splunk_session,
+            clear_splunk_session,
+            session_ldap_short,
+        )
+        from analysis.customer_context import has_splunk_credentials
+
+        _connected = st.session_state.get("_splunk_connected") or has_splunk_credentials()
+        _ldap_short = session_ldap_short(st.session_state)
+
+        if _connected and _ldap_short:
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f'background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);'
+                f'border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:{T["text"]}">'
+                f'<span style="color:#16A34A;font-weight:700">●</span>'
+                f'<span>Splunk connected as <b>{_html.escape(_ldap_short)}</b> '
+                f'(<code>{_html.escape(_ldap_short)}@adobe.com</code>)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.28);'
+                f'border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:13px;color:{T["amber"]}">'
+                f'Connect your Adobe LDAP to fetch live pipeline data from Splunk.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("#### Your Splunk Access")
+        st.caption(
+            "Personal Adobe LDAP — not tied to a specific customer. "
+            "Enter your LDAP ID without @adobe.com."
+        )
+
+        if _IS_DARK:
+            st.markdown(
+                """
+<style>
+/* Splunk LDAP form: white labels, no input box outline (dark mode) */
+[data-testid="stForm"]:has(#splunk-ldap-marker) label p,
+[data-testid="stForm"]:has(#splunk-ldap-marker) label {
+    color: #FFFFFF !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}
+[data-testid="stForm"]:has(#splunk-ldap-marker) [data-baseweb="input"],
+[data-testid="stForm"]:has(#splunk-ldap-marker) [data-baseweb="base-input"],
+[data-testid="stForm"]:has(#splunk-ldap-marker) input {
+    border: none !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+</style>
+""",
+                unsafe_allow_html=True,
+            )
+
+        with st.form("splunk_ldap_form", clear_on_submit=False):
+            st.markdown('<span id="splunk-ldap-marker"></span>', unsafe_allow_html=True)
+            _prefill_ldap = _ldap_short or ""
+            _sc1, _sc2 = st.columns(2)
+            _splunk_ldap_id = _sc1.text_input(
+                "LDAP ID",
+                value=_prefill_ldap,
+                placeholder="user_name",
+                help="Your Adobe LDAP name before @adobe.com",
+            )
+            _splunk_ldap_pwd = _sc2.text_input(
+                "LDAP Password",
+                type="password",
+                placeholder="Adobe LDAP password",
+                help="Encrypted at rest in data/.splunk_vault/",
+            )
+            _splunk_save = st.form_submit_button(
+                "Save & Test Connection",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if _splunk_save:
+            if not _splunk_ldap_id.strip() or not _splunk_ldap_pwd:
+                st.error("LDAP ID and password are required.")
+            else:
+                try:
+                    _short = activate_splunk_session(
+                        st.session_state,
+                        st.query_params,
+                        _splunk_ldap_id.strip(),
+                        _splunk_ldap_pwd,
+                    )
+                    st.session_state["_splunk_connected"] = True
+                    try:
+                        load_splunk_data.clear()
+                    except Exception:
+                        pass
+                    st.success(f"Splunk connected as **{_short}**")
+                    st.rerun()
+                except Exception as _se:
+                    st.error(str(_se))
+
+        if _connected:
+            if st.button("Clear Splunk credentials", type="secondary", key="splunk_clear_btn"):
+                clear_splunk_session(st.session_state, st.query_params)
+                st.session_state["_splunk_connected"] = False
+                st.session_state["_splunk_cookie_clear"] = True
+                try:
+                    load_splunk_data.clear()
+                except Exception:
+                    pass
+                st.success("Splunk credentials cleared.")
+                st.rerun()
 
     with _ob_tab:
         # Pre-fill from existing customer if editing
@@ -7906,7 +8309,7 @@ elif page == "Repo Settings":
             _git_url      = _gc1.text_input("Git URL", value=_prefill.get("git_url",""), placeholder="https://git.cloudmanager.adobe.com/org/repo/")
             _git_branch   = _gc2.text_input("Deploy Branch", value=_prefill.get("git_branch",""), placeholder="e.g. master, stage_and_prod, qa-release — leave blank to show all branches")
             _gc3, _gc4    = st.columns(2)
-            _git_user     = _gc3.text_input("Git Username", value=_prefill.get("git_username",""), placeholder="vanssharma-adobe-com")
+            _git_user     = _gc3.text_input("Git Username", value=_prefill.get("git_username",""), placeholder="username-adobe-com")
             _git_pwd      = _gc4.text_input("Git Password", value=_prefill_pwd, type="password",
                                              placeholder="Generate in CM → Repositories → Generate password",
                                              help="Stored in data/.secrets.json — never committed to git")
@@ -8012,16 +8415,17 @@ elif page == "Repo Settings":
                     # Runs once per customer after first save. Populates ChromaDB from
                     # last 30 days of Splunk data so predictions have historical context
                     # from day one. Skipped if ChromaDB already has data for this customer.
-                    def _auto_init_bg(_cfg=_new_cfg, _name=_cust_name):
-                        import threading as _thr
+                    def _auto_init_bg(_cfg=_new_cfg, _name=_cust_name, _pwd=_git_pwd):
+                        import contextvars as _cv
+                        _ctx_snapshot = _cv.copy_context()
+
                         def _run():
                             try:
-                                import os as _os
+                                from analysis.customer_context import get_program_id
                                 from connectors.splunk_connector import fetch_pipeline_list, fetch_failed_steps
                                 from analysis.cold_start import initialize_customer
+
                                 _pid = _cfg["program_id"]
-                                _os.environ["PROGRAM_ID"]   = _pid
-                                _os.environ["GIT_LOCAL_DIR"] = _cfg.get("git_local_dir", "")
                                 _cs_pdf = fetch_pipeline_list(int(_pid))
                                 _cs_fdf = fetch_failed_steps(int(_pid))
                                 initialize_customer(
@@ -8033,13 +8437,17 @@ elif page == "Repo Settings":
                                     git_branch    = _cfg.get("git_branch", "master"),
                                     git_url       = _cfg.get("git_url", ""),
                                     git_username  = _cfg.get("git_username", ""),
-                                    git_password  = _git_pwd,
+                                    git_password  = _pwd,
                                 )
                                 print(f"  [onboard] Historical init complete for {_name}")
                             except Exception as _e:
                                 print(f"  [onboard] Historical init failed for {_name}: {_e}")
-                        _thr.Thread(target=_run, daemon=True,
-                                    name=f"init-{_name}").start()
+
+                        _threading.Thread(
+                            target=lambda: _ctx_snapshot.run(_run),
+                            daemon=True,
+                            name=f"init-{_name}",
+                        ).start()
 
                     _auto_init_bg()
                     st.info(
@@ -8067,51 +8475,48 @@ elif page == "Repo Settings":
             if not _init_ready:
                 st.warning("Save the customer and ensure the repository is cloned before initializing.")
             elif st.button("Initialize Historical Data", type="primary", key="cold_start_btn"):
-                _progress_msgs = []
-                def _on_progress(msg):
-                    _progress_msgs.append(msg)
+                if not st.session_state.get("_splunk_connected"):
+                    st.warning(
+                        "Configure Splunk LDAP in **Customer Information** before initializing historical data."
+                    )
+                else:
+                    _progress_msgs = []
+                    def _on_progress(msg):
+                        _progress_msgs.append(msg)
 
-                with st.spinner("Initializing — fetching Splunk data and processing history..."):
-                    try:
-                        # Load Splunk data for this customer
-                        _old_pid = os.environ.get("PROGRAM_ID", "")
-                        os.environ["PROGRAM_ID"] = _cust_data["program_id"]
-                        os.environ["GIT_LOCAL_DIR"] = _cust_data["git_local_dir"]
+                    with st.spinner("Initializing — fetching Splunk data and processing history..."):
+                        try:
+                            from connectors.splunk_connector import fetch_pipeline_list, fetch_failed_steps
+                            from analysis.cold_start import initialize_customer
 
-                        from connectors.splunk_connector import fetch_pipeline_list, fetch_failed_steps
-                        import pandas as _pd_cs
-                        _cs_pdf = fetch_pipeline_list(int(_cust_data["program_id"]))
-                        _cs_fdf = fetch_failed_steps(int(_cust_data["program_id"]))
+                            _cs_pdf = fetch_pipeline_list(int(_cust_data["program_id"]))
+                            _cs_fdf = fetch_failed_steps(int(_cust_data["program_id"]))
 
-                        from analysis.cold_start import initialize_customer
-                        _cs_results = initialize_customer(
-                            program_id    = _cust_data["program_id"],
-                            tenant_id     = _cust_data.get("tenant_id", ""),
-                            pipeline_df   = _cs_pdf,
-                            failed_df     = _cs_fdf,
-                            git_local_dir = _cust_data["git_local_dir"],
-                            git_branch    = _cust_data.get("git_branch", "master"),
-                            on_progress   = _on_progress,
-                            git_url       = _cust_data.get("git_url", ""),
-                            git_username  = _cust_data.get("git_username", ""),
-                            git_password  = _cust_data.get("git_password", ""),
-                        )
+                            _cs_results = initialize_customer(
+                                program_id    = _cust_data["program_id"],
+                                tenant_id     = _cust_data.get("tenant_id", ""),
+                                pipeline_df   = _cs_pdf,
+                                failed_df     = _cs_fdf,
+                                git_local_dir = _cust_data["git_local_dir"],
+                                git_branch    = _cust_data.get("git_branch", "master"),
+                                on_progress   = _on_progress,
+                                git_url       = _cust_data.get("git_url", ""),
+                                git_username  = _cust_data.get("git_username", ""),
+                                git_password  = _cust_data.get("git_password", ""),
+                            )
 
-                        if _old_pid:
-                            os.environ["PROGRAM_ID"] = _old_pid
-
-                        _retro = _cs_results.get("retroactive", {})
-                        _chroma = _cs_results.get("chromadb", {})
-                        st.success(
-                            f"Initialization complete for **{_edit_mode}**\n\n"
-                            f"- **{_retro.get('created', 0)}** historical prediction records created\n"
-                            f"- **{_chroma.get('ingested', 0)}** failure patterns ingested into ChromaDB\n\n"
-                            f"Historical Match signal is now active. Confidence scores will be higher."
-                        )
-                    except Exception as _cse:
-                        st.error(f"Initialization failed: {_cse}")
-                        if _progress_msgs:
-                            st.code("\n".join(_progress_msgs[-10:]))
+                            _retro = _cs_results.get("retroactive", {})
+                            _chroma = _cs_results.get("chromadb", {})
+                            st.success(
+                                f"Initialization complete for **{_edit_mode}**\n\n"
+                                f"- **{_retro.get('created', 0)}** historical prediction records created\n"
+                                f"- **{_chroma.get('ingested', 0)}** failure patterns ingested into ChromaDB\n\n"
+                                f"Historical Match signal is now active. Confidence scores will be higher."
+                            )
+                        except Exception as _cse:
+                            st.error(f"Initialization failed: {_cse}")
+                            if _progress_msgs:
+                                st.code("\n".join(_progress_msgs[-10:]))
 
             # Delete customer
             st.markdown("")
