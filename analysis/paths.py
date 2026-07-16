@@ -45,6 +45,10 @@ def splunk_exports_dir() -> Path:
     return data_dir() / "splunk_exports"
 
 
+def splunk_vault_dir() -> Path:
+    return data_dir() / ".splunk_vault"
+
+
 def ml_dataset_dir() -> Path:
     return data_dir() / "ml_dataset"
 

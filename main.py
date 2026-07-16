@@ -1,7 +1,7 @@
 """
 Entry point — delegates to CLI report command.
-Splunk data: fetched live from Splunk API (SPLUNK_USERNAME + SPLUNK_PASSWORD in .env).
-Falls back to data/splunk_exports/ CSVs if credentials are missing.
+Splunk live API: configured per-user in dashboard (Repo Settings → Customer Information).
+CLI falls back to disk cache or data/splunk_exports/ CSVs when no user session exists.
 """
 
 import sys

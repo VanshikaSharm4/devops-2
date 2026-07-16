@@ -29,7 +29,8 @@ $PYTHON -m pip install -r requirements.txt --quiet
 
 # 3. Create data directories
 echo "[3/6] Creating data directories..."
-mkdir -p data/predictions data/cache/assessments data/cache/logs reports
+mkdir -p data/predictions data/cache/assessments data/cache/logs data/.splunk_vault reports
+chmod 700 data/.splunk_vault 2>/dev/null || true
 
 # 4. Set up config files (copy examples if not present)
 echo "[4/6] Setting up config..."
@@ -42,11 +43,13 @@ fi
 
 # 5. Copy .env template
 if [ ! -f ".env" ]; then
-    cat > .env << 'ENV'
-# Splunk
-SPLUNK_USERNAME=your_splunk_username
-SPLUNK_PASSWORD=your_splunk_password
-SPLUNK_EARLIEST=-30d
+    _CRED_KEY=$($PYTHON -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || echo "")
+    cat > .env << ENV
+# Credential encryption — required for Splunk LDAP vault (data/.splunk_vault/)
+ARGUS_CREDENTIALS_KEY=${_CRED_KEY}
+
+# Splunk query window (optional)
+SPLUNK_EARLIEST=-14d
 
 # Azure OpenAI (LLM)
 AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
@@ -58,11 +61,21 @@ LLM_PROVIDER=azure_openai
 AZURE_STORAGE_ACCOUNT=your_account
 AZURE_STORAGE_KEY=your_key
 
-# Where git repos are cloned on this server
-# Developers add customers via the UI — repos clone here automatically
-REPOS_BASE_DIR=/opt/repos
+# Persistent data paths (Eris production)
+ARGUS_DATA_DIR=/opt/argus/data
+ARGUS_REPOS_DIR=/opt/argus/repos
+REPOS_BASE_DIR=/opt/argus/repos
 ENV
-    echo "  → Created .env template. Fill in your credentials."
+    echo "  → Created .env template. Fill in LLM and Azure credentials."
+    echo "  → ARGUS_CREDENTIALS_KEY was auto-generated for Splunk vault encryption."
+fi
+
+# Ensure ARGUS_CREDENTIALS_KEY exists in .env
+if [ -f ".env" ] && ! grep -q "^ARGUS_CREDENTIALS_KEY=.\+" .env 2>/dev/null; then
+    _CRED_KEY=$($PYTHON -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    echo "" >> .env
+    echo "ARGUS_CREDENTIALS_KEY=${_CRED_KEY}" >> .env
+    echo "  → Added ARGUS_CREDENTIALS_KEY to .env"
 fi
 
 mkdir -p "$APP_DIR/logs"
@@ -87,4 +100,4 @@ echo ""
 echo "=== Access URL ==="
 echo "  http://$(hostname -I | awk '{print $1}'):$PORT"
 echo ""
-echo "[6/6] Open the app → go to 'Repo Settings' → add your first customer."
+echo "[6/6] Open the app → Repo Settings → Customer Information (Splunk LDAP), then add customers."

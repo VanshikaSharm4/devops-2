@@ -59,6 +59,13 @@ CACHE_FILE = _cache_file()
 
 
 def _use_splunk_api() -> bool:
+    try:
+        from analysis.customer_context import has_splunk_credentials
+
+        if has_splunk_credentials():
+            return True
+    except Exception:
+        pass
     return bool(os.getenv("SPLUNK_USERNAME") and os.getenv("SPLUNK_PASSWORD"))
 
 
@@ -148,24 +155,38 @@ def _save_cache(
     print(f"  [ingest] Results cached to disk ({cf})")
 
 
-def clear_cache() -> None:
-    """Force-clear the disk cache so next load re-fetches from Splunk."""
-    if CACHE_FILE.exists():
-        CACHE_FILE.unlink()
-        print("  [ingest] Cache cleared.")
+def clear_cache(program_id: Optional[int] = None) -> None:
+    """
+    Force-clear the disk cache so next load re-fetches from Splunk.
+
+    Resolves the cache file for the CURRENT program each call (not the
+    import-time CACHE_FILE alias), so the active customer's cache is actually
+    cleared. Pass program_id to target a specific program.
+    """
+    cf = _cache_file(program_id)
+    if cf.exists():
+        cf.unlink()
+        print(f"  [ingest] Cache cleared ({cf}).")
 
 
-def cache_info() -> dict:
-    """Return cache status for display in the dashboard."""
-    if not CACHE_FILE.exists():
+def cache_info(program_id: Optional[int] = None) -> dict:
+    """
+    Return cache status for display in the dashboard.
+
+    Resolves the cache file for the CURRENT program each call so the sidebar
+    reports the age of the selected customer's cache — not the import-time
+    default (which produced bogus "stale 1119 min" readings).
+    """
+    cf = _cache_file(program_id)
+    if not cf.exists():
         return {"exists": False}
-    age_min = round((time.time() - CACHE_FILE.stat().st_mtime) / 60, 1)
+    age_min = round((time.time() - cf.stat().st_mtime) / 60, 1)
     return {
         "exists":    True,
         "age_min":   age_min,
         "ttl_min":   CACHE_TTL_MIN,
         "fresh":     age_min < CACHE_TTL_MIN,
-        "path":      str(CACHE_FILE),
+        "path":      str(cf),
     }
 
 
@@ -192,12 +213,20 @@ def load_live_data(
 
     # Submit pipeline + failed steps in parallel.
     # Azure share names are optional — skip during risk assessment to save time.
+    #
+    # Splunk credentials live in contextvars (per-user, set from the dashboard).
+    # ThreadPoolExecutor workers do NOT inherit the calling context, so we carry
+    # an independent snapshot into each worker — otherwise _auth() sees no
+    # credentials and the query fails. One copy per submission (a single
+    # Context object cannot be entered concurrently).
+    import contextvars as _cv
+
     with ThreadPoolExecutor(max_workers=3) as pool:
-        future_pipeline = pool.submit(fetch_pipeline_list, pid)
-        future_failed   = pool.submit(fetch_failed_steps,  pid)
+        future_pipeline = pool.submit(_cv.copy_context().run, fetch_pipeline_list, pid)
+        future_failed   = pool.submit(_cv.copy_context().run, fetch_failed_steps,  pid)
         future_shares   = (
             None if skip_share_names
-            else pool.submit(fetch_share_names, pid)
+            else pool.submit(_cv.copy_context().run, fetch_share_names, pid)
         )
 
         pipeline_df     = future_pipeline.result()
@@ -264,8 +293,11 @@ def load_data(
             print(f"  [ingest] Loaded from disk cache (fresh)")
             return _load_cache(pid)
 
-        # Stale cache exists — return it immediately and refresh in background
-        if stale_while_revalidate and _cache_exists(pid):
+        # Stale cache exists — return it immediately and refresh in background.
+        # NOTE: force_refresh bypasses this branch so it fetches synchronously
+        # (in the caller's context, which carries the Splunk credentials).
+        if stale_while_revalidate and not force_refresh and _cache_exists(pid):
+            import contextvars as _cv
             import threading as _threading
 
             def _bg_refresh():
@@ -276,7 +308,10 @@ def load_data(
                 except Exception as _e:
                     print(f"  [ingest] Background refresh failed: {_e}")
 
-            _t = _threading.Thread(target=_bg_refresh, daemon=True)
+            # Carry the current context (Splunk credentials live in contextvars,
+            # which are NOT visible to a bare thread) into the worker.
+            _ctx = _cv.copy_context()
+            _t = _threading.Thread(target=lambda: _ctx.run(_bg_refresh), daemon=True)
             _t.start()
             print(f"  [ingest] Returning stale cache, refreshing in background…")
             return _load_cache(pid)

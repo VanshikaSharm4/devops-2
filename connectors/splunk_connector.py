@@ -23,31 +23,66 @@ LATEST     = "now"
 
 
 def _auth() -> HTTPBasicAuth:
+    try:
+        from analysis.customer_context import get_splunk_password, get_splunk_username, has_splunk_credentials
+
+        if has_splunk_credentials():
+            return HTTPBasicAuth(get_splunk_username(), get_splunk_password())
+    except Exception:
+        pass
+
     username = os.getenv("SPLUNK_USERNAME")
     password = os.getenv("SPLUNK_PASSWORD")
-    if not username or not password:
-        raise ValueError("SPLUNK_USERNAME and SPLUNK_PASSWORD must be set in .env")
-    return HTTPBasicAuth(username, password)
+    if username and password:
+        return HTTPBasicAuth(username, password)
+
+    raise ValueError(
+        "Splunk credentials not configured. "
+        "Set them in Repo Settings → Customer Information."
+    )
 
 
 def _stream_query(spl: str, earliest: str = EARLIEST, timeout: int = 120) -> pd.DataFrame:
     """
     Run a Splunk search via the streaming export endpoint.
     Results arrive as newline-delimited JSON — no polling needed.
+
+    Transient server errors (502/503/504) and timeouts are retried with a short
+    backoff — Splunk's export endpoint intermittently returns 503 under load.
     """
-    response = requests.post(
-        EXPORT_URL,
-        auth=_auth(),
-        data={
-            "search": spl,
-            "output_mode": "json",
-            "earliest_time": earliest,
-            "latest_time": LATEST,
-        },
-        verify=False,
-        stream=True,
-        timeout=timeout,
-    )
+    import time as _time
+
+    _RETRIABLE = {502, 503, 504}
+    _MAX_ATTEMPTS = 3
+    response = None
+    for _attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            response = requests.post(
+                EXPORT_URL,
+                auth=_auth(),
+                data={
+                    "search": spl,
+                    "output_mode": "json",
+                    "earliest_time": earliest,
+                    "latest_time": LATEST,
+                },
+                verify=False,
+                stream=True,
+                timeout=timeout,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if _attempt == _MAX_ATTEMPTS:
+                raise
+            print(f"  [Splunk] {type(e).__name__} — retry {_attempt}/{_MAX_ATTEMPTS - 1} after backoff…")
+            _time.sleep(2 * _attempt)
+            continue
+
+        if response.status_code in _RETRIABLE and _attempt < _MAX_ATTEMPTS:
+            print(f"  [Splunk] HTTP {response.status_code} — retry {_attempt}/{_MAX_ATTEMPTS - 1} after backoff…")
+            _time.sleep(2 * _attempt)
+            continue
+        break
+
     response.raise_for_status()
 
     rows = []
@@ -165,11 +200,19 @@ def fetch_share_names(program_id: int = 19905) -> dict:
 # ── Test connection ───────────────────────────────────────────────────────────
 
 def test_connection() -> bool:
-    r = requests.get(
-        f"{BASE_URL}/services/authentication/current-context",
+    # Probe the export endpoint (the data path). The authentication/
+    # current-context endpoint returns 403 even for valid data creds.
+    r = requests.post(
+        EXPORT_URL,
         auth=_auth(),
-        params={"output_mode": "json"},
+        data={
+            "search": "| makeresults",
+            "output_mode": "json",
+            "earliest_time": "-1m",
+            "latest_time": "now",
+        },
         verify=False,
+        stream=True,
         timeout=10,
     )
     return r.status_code == 200

@@ -2,6 +2,7 @@ anthropic
 javalang
 azure-storage-file-share
 chromadb
+cryptography
 drain3
 FlagEmbedding
 google-generativeai

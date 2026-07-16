@@ -24,6 +24,8 @@ _git_branch    = ContextVar("git_branch",    default="master")
 _pipeline_prod = ContextVar("pipeline_prod", default="")
 _pipeline_dev  = ContextVar("pipeline_dev",  default="")
 _tenant_id     = ContextVar("tenant_id",     default="")
+_splunk_username = ContextVar("splunk_username", default="")
+_splunk_password = ContextVar("splunk_password", default="")
 
 
 def set_customer_context(customer: Dict) -> None:
@@ -73,3 +75,28 @@ def get_pipeline_dev() -> str:
 
 def get_tenant_id() -> str:
     return _tenant_id.get() or ""
+
+
+def set_splunk_context(username: str, password: str) -> None:
+    """Set per-session Splunk LDAP credentials (full email + password)."""
+    from analysis.splunk_credentials import normalize_splunk_username
+
+    _splunk_username.set(normalize_splunk_username(username))
+    _splunk_password.set(password or "")
+
+
+def clear_splunk_context() -> None:
+    _splunk_username.set("")
+    _splunk_password.set("")
+
+
+def get_splunk_username() -> str:
+    return _splunk_username.get() or ""
+
+
+def get_splunk_password() -> str:
+    return _splunk_password.get() or ""
+
+
+def has_splunk_credentials() -> bool:
+    return bool(get_splunk_username() and get_splunk_password())

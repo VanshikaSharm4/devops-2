@@ -59,7 +59,12 @@ def _auth_url() -> str:
         username = get_git_username()
         password = get_git_password()
     except Exception:
+        username, password = "", ""
+    # Fall back to env when the context is empty (e.g. running in a worker
+    # thread that did not inherit the per-user contextvars).
+    if not username:
         username = os.getenv("CM_GIT_USERNAME", "")
+    if not password:
         password = os.getenv("CM_GIT_PASSWORD", "")
     url = _repo_url()
     if username and password:
