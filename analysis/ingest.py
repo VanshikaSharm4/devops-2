@@ -50,7 +50,14 @@ CACHE_TTL_MIN = int(os.getenv("SPLUNK_CACHE_TTL_MINUTES", "30"))
 
 
 def _cache_file(program_id: Optional[int] = None) -> Path:
-    pid = program_id or int(_get_ctx("program_id", "PROGRAM_ID"))
+    # Robust to a missing program id (fresh deploy with no customer configured
+    # and no PROGRAM_ID in .env): fall back to the default rather than raising
+    # `int('')` at import time, which would block the app from starting.
+    raw = program_id or _get_ctx("program_id", "PROGRAM_ID") or "19905"
+    try:
+        pid = int(raw)
+    except (TypeError, ValueError):
+        pid = 19905
     return CACHE_DIR / f"splunk_cache_{pid}.pkl"
 
 
